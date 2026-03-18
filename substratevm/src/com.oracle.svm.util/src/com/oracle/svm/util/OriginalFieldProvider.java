@@ -26,13 +26,17 @@ package com.oracle.svm.util;
 
 import java.lang.reflect.Field;
 
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
+
 import jdk.vm.ci.meta.ResolvedJavaField;
 
 /**
  * A wrapper field that can be unwrapped to an original host VM field.
  *
- * @see GraalAccess
+ * @see GuestAccess
  */
+@Platforms(Platform.HOSTED_ONLY.class)
 public interface OriginalFieldProvider {
 
     /**
@@ -61,7 +65,7 @@ public interface OriginalFieldProvider {
         ResolvedJavaField originalField = getOriginalField(field);
         if (originalField != null) {
             try {
-                return GraalAccess.getOriginalSnippetReflection().originalField(originalField);
+                return GuestAccess.get().getSnippetReflection().originalField(originalField);
             } catch (LinkageError ignored) {
                 /*
                  * Ignore any linking problems and incompatible class change errors. Looking up a

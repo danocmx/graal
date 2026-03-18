@@ -24,14 +24,20 @@
  */
 package com.oracle.svm.hosted.imagelayer;
 
+import static com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.APP_LAYER_ONLY_TRAIT;
+
 import java.io.IOException;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.locks.Lock;
+import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 import org.graalvm.collections.EconomicMap;
@@ -44,21 +50,12 @@ import com.oracle.graal.pointsto.api.PointstoOptions;
 import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.LayerVerifiedOption;
-import com.oracle.svm.core.option.LocatableMultiOptionValue.ValueWithOrigin;
-import com.oracle.svm.core.option.OptionUtils;
+import com.oracle.svm.core.imagelayer.LayeredImageOptions;
 import com.oracle.svm.core.option.RuntimeOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.ArchiveSupport;
+import com.oracle.svm.core.util.ConcurrentUtils;
 import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.hosted.GuestTypes;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.NativeImageClassLoaderSupport;
 import com.oracle.svm.hosted.c.NativeLibraries;
@@ -69,7 +66,26 @@ import com.oracle.svm.hosted.imagelayer.SharedLayerSnapshotCapnProtoSchemaHolder
 import com.oracle.svm.hosted.option.HostedOptionParser;
 import com.oracle.svm.shaded.org.capnproto.ReaderOptions;
 import com.oracle.svm.shaded.org.capnproto.Serialize;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.collections.ConcurrentIdentityHashMap;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.LayerVerifiedOption;
+import com.oracle.svm.shared.option.LocatableMultiOptionValue.ValueWithOrigin;
+import com.oracle.svm.shared.option.OptionUtils;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.ImageSingletonsSupportImpl;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.DisallowedSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.LayeredInstallationKindSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind;
+import com.oracle.svm.shared.singletons.traits.SingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonTraitKind;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.TypeResult;
 
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
@@ -78,9 +94,9 @@ import jdk.graal.compiler.options.OptionDescriptors;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.graal.compiler.options.OptionsContainer;
-import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ResolvedJavaType;
 
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSupport {
 
     private static String layerCreatePossibleOptions() {
@@ -90,6 +106,7 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
     private SVMImageLayerLoader loader;
     private SVMImageLayerWriter writer;
     private SVMImageLayerSingletonLoader singletonLoader;
+    private final EnumSet<SingletonLayeredInstallationKind> forbiddenInstallationKinds;
     private final ImageClassLoader imageClassLoader;
     private final SharedLayerSnapshot.Reader snapshot;
     private final List<FileChannel> graphsChannels;
@@ -100,13 +117,13 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
      * associate additional traits with a singleton. Currently this is exclusively set in
      * {@link #initialize}.
      */
-    private final Function<Class<?>, SingletonTrait[]> singletonTraitInjector;
+    private final Function<Class<?>, SingletonTrait<?>[]> singletonTraitInjector;
     /**
-     * Optional suboption of the {@link SubstrateOptions#LayerCreate} option. If the `LayerCreate`
-     * option is specified inside a `native-image.properties` file and this suboption is enabled,
-     * the classpath/modulepath entry containing the `native-image.properties` file will be excluded
-     * from the classpath/modulepath layered compatibility check. This suboption has no effect if
-     * it's specified from the command line. See
+     * Optional suboption of the {@link LayeredImageOptions#LayerCreate} option. If the
+     * `LayerCreate` option is specified inside a `native-image.properties` file and this suboption
+     * is enabled, the classpath/modulepath entry containing the `native-image.properties` file will
+     * be excluded from the classpath/modulepath layered compatibility check. This suboption has no
+     * effect if it's specified from the command line. See
      * {@link #processLayerOptions(EconomicMap, NativeImageClassLoaderSupport)} for more details.
      */
     private static final String DIGEST_IGNORE = "digest-ignore";
@@ -114,7 +131,7 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
     private HostedImageLayerBuildingSupport(ImageClassLoader imageClassLoader,
                     Reader snapshot, List<FileChannel> graphsChannels,
                     boolean buildingImageLayer, boolean buildingInitialLayer, boolean buildingApplicationLayer,
-                    WriteLayerArchiveSupport writeLayerArchiveSupport, LoadLayerArchiveSupport loadLayerArchiveSupport, Function<Class<?>, SingletonTrait[]> singletonTraitInjector) {
+                    WriteLayerArchiveSupport writeLayerArchiveSupport, LoadLayerArchiveSupport loadLayerArchiveSupport, Function<Class<?>, SingletonTrait<?>[]> singletonTraitInjector) {
         super(buildingImageLayer, buildingInitialLayer, buildingApplicationLayer);
         this.imageClassLoader = imageClassLoader;
         this.snapshot = snapshot;
@@ -122,6 +139,15 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
         this.writeLayerArchiveSupport = writeLayerArchiveSupport;
         this.loadLayerArchiveSupport = loadLayerArchiveSupport;
         this.singletonTraitInjector = singletonTraitInjector;
+        this.forbiddenInstallationKinds = EnumSet.noneOf(SingletonLayeredInstallationKind.class);
+        if (buildingImageLayer) {
+            if (!buildingApplicationLayer) {
+                forbiddenInstallationKinds.add(SingletonLayeredInstallationKind.APP_LAYER_ONLY);
+            }
+            if (!buildingInitialLayer) {
+                forbiddenInstallationKinds.add(SingletonLayeredInstallationKind.INITIAL_LAYER_ONLY);
+            }
+        }
     }
 
     public static HostedImageLayerBuildingSupport singleton() {
@@ -160,6 +186,10 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
         return writeLayerArchiveSupport;
     }
 
+    public void persistSingletons() {
+        writer.writeImageSingletonInfo(ImageSingletonsSupportImpl.HostedManagement.getSingletonsToPersist());
+    }
+
     public void archiveLayer() {
         writer.dumpFiles();
         writeLayerArchiveSupport.write(imageClassLoader.platform);
@@ -185,7 +215,74 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
         return typeResult.get();
     }
 
-    public Function<Class<?>, SingletonTrait[]> getSingletonTraitInjector() {
+    public ResolvedJavaType lookupType(boolean optional, String className) {
+        TypeResult<ResolvedJavaType> typeResult = imageClassLoader.guestTypes.findType(className);
+        if (!typeResult.isPresent()) {
+            if (optional) {
+                return null;
+            } else {
+                throw AnalysisError.shouldNotReachHere("Class not found: " + className);
+            }
+        }
+        return typeResult.get();
+    }
+
+    /**
+     * It registers a callback that is executed for each singleton exactly once. Note that a
+     * singleton object can be associated with multiple keys, so it's not enough to synchronize on
+     * the {@link Class} singleton key.
+     * <p>
+     * It uses a map to track the status of singletons for which a registration callback needs to be
+     * executed upon installation. The key will always be the singleton object, and the value will
+     * be either a {@link Boolean} or {@link Lock} based on whether the callback's execution is
+     * still in progress or has completed.
+     *
+     * @return a callback to be executed on singleton registration
+     */
+    public BiConsumer<Class<?>, ImageSingletonsSupportImpl.SingletonInfo> createSingletonRegistrationCallback() {
+        boolean extensionLayerBuild = buildingImageLayer && !buildingInitialLayer;
+        if (extensionLayerBuild) {
+            ConcurrentIdentityHashMap<Object, Object> singletonRegistrationCallbackStatus = new ConcurrentIdentityHashMap<>();
+            return (key, info) -> {
+                if (singletonLoader.hasRegistrationCallback(key)) {
+                    ConcurrentUtils.synchronizeRunnableExecution(info.singleton(), new Runnable() {
+                        @Override
+                        @SuppressWarnings("unchecked")
+                        public void run() {
+                            Optional<LayeredCallbacksSingletonTrait> trait = info.traitMap().getTrait(LayeredCallbacksSingletonTrait.class);
+                            ((SingletonLayeredCallbacks<Object>) trait.get().metadata()).onSingletonRegistration(singletonLoader.getImageSingletonLoader(key), info.singleton());
+                        }
+                    }, singletonRegistrationCallbackStatus);
+                }
+            };
+        }
+        return null;
+    }
+
+    public void forbidNewTraitInstallations(SingletonLayeredInstallationKind kind) {
+        forbiddenInstallationKinds.add(kind);
+    }
+
+    public BiConsumer<Object, ImageSingletonsSupportImpl.SingletonTraitMap> createSingletonValidationCallback() {
+        if (buildingImageLayer) {
+            return (value, traitMap) -> {
+                var installationTrait = traitMap.getTrait(LayeredInstallationKindSingletonTrait.class);
+                installationTrait.ifPresent(t -> {
+                    if (forbiddenInstallationKinds.contains(t.metadata())) {
+                        if (LayeredImageOptions.LayeredImageDiagnosticOptions.LayerOptionVerification.getValue()) {
+                            throw VMError.shouldNotReachHere("Singleton with installation kind %s can no longer be added: %s", t.metadata(), value);
+                        }
+                    }
+                });
+                traitMap.getTrait(DisallowedSingletonTrait.class).ifPresent(_ -> {
+                    throw VMError.shouldNotReachHere("Singleton with %s trait should never be added to a layered build", SingletonTraitKind.DISALLOWED);
+                });
+            };
+        }
+        return null;
+    }
+
+    public Function<Class<?>, SingletonTrait<?>[]> getSingletonTraitInjector() {
         return singletonTraitInjector;
     }
 
@@ -203,7 +300,7 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
             ValueWithOrigin<String> valueWithOrigin = getLayerCreateValueWithOrigin(hostedOptions);
             String layerCreateValue = getLayerCreateValue(valueWithOrigin);
             LayerOption layerOption = LayerOption.parse(layerCreateValue);
-            String layerCreateArg = SubstrateOptionsParser.commandArgument(SubstrateOptions.LayerCreate, layerCreateValue);
+            String layerCreateArg = SubstrateOptionsParser.commandArgument(LayeredImageOptions.LayerCreate, layerCreateValue);
             Path layerFileName = layerOption.fileName();
             if (layerFileName.toString().isEmpty()) {
                 layerFileName = Path.of(SubstrateOptions.Name.getValue(hostedOptions) + LayerArchiveSupport.LAYER_FILE_EXTENSION);
@@ -250,7 +347,7 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
              * and EVERYONE_MODULE. This allows to have a consistent hash code for those modules at
              * run time and build time.
              */
-            SubstrateOptions.ApplicationLayerInitializedClasses.update(values, Module.class.getName());
+            LayeredImageOptions.ApplicationLayerInitializedClasses.update(values, Module.class.getName());
 
             setOptionIfHasNotBeenSet(values, SubstrateOptions.ConcealedOptions.RelativeCodePointers, true);
 
@@ -265,7 +362,7 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
     }
 
     private static Path getLayerUseValue(OptionValues hostedOptions) {
-        return SubstrateOptions.LayerUse.getValue(hostedOptions).lastValue().orElseThrow();
+        return LayeredImageOptions.LayerUse.getValue(hostedOptions).lastValue().orElseThrow();
     }
 
     /**
@@ -289,22 +386,22 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
     }
 
     private static ValueWithOrigin<String> getLayerCreateValueWithOrigin(OptionValues hostedOptions) {
-        return SubstrateOptions.LayerCreate.getValue(hostedOptions).lastValueWithOrigin().orElseThrow();
+        return LayeredImageOptions.LayerCreate.getValue(hostedOptions).lastValueWithOrigin().orElseThrow();
     }
 
     public static boolean isLayerCreateOptionEnabled(OptionValues values) {
-        if (SubstrateOptions.LayerCreate.hasBeenSet(values)) {
+        if (LayeredImageOptions.LayerCreate.hasBeenSet(values)) {
             return !getLayerCreateValue(getLayerCreateValueWithOrigin(values)).isEmpty();
         }
         return false;
     }
 
     private static String getLayerCreateValue(ValueWithOrigin<String> valueWithOrigin) {
-        return String.join(",", OptionUtils.resolveOptionValuesRedirection(SubstrateOptions.LayerCreate, valueWithOrigin));
+        return String.join(",", OptionUtils.resolveOptionValuesRedirection(LayeredImageOptions.LayerCreate, valueWithOrigin));
     }
 
     private static boolean isLayerUseOptionEnabled(OptionValues values) {
-        if (SubstrateOptions.LayerUse.hasBeenSet(values)) {
+        if (LayeredImageOptions.LayerUse.hasBeenSet(values)) {
             return !getLayerUseValue(values).toString().isEmpty();
         }
         return false;
@@ -324,10 +421,10 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
             if (!supportedPlatform(platform)) {
                 ValueWithOrigin<String> valueWithOrigin = getLayerCreateValueWithOrigin(values);
                 String layerCreateValue = getLayerCreateValue(valueWithOrigin);
-                String layerCreateArg = SubstrateOptionsParser.commandArgument(SubstrateOptions.LayerCreate, layerCreateValue);
+                String layerCreateArg = SubstrateOptionsParser.commandArgument(LayeredImageOptions.LayerCreate, layerCreateValue);
                 String message = String.format("Layer creation option '%s' from %s is not supported when building for platform %s/%s.",
                                 layerCreateArg, valueWithOrigin.origin(), platform.getOS(), platform.getArchitecture());
-                if (SubstrateOptions.LayerOptionVerification.getValue(values)) {
+                if (LayeredImageOptions.LayeredImageDiagnosticOptions.LayerOptionVerification.getValue(values)) {
                     throw UserError.abort("%s", message);
                 }
                 LogUtils.warning(message);
@@ -346,16 +443,18 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
         ArchiveSupport archiveSupport = new ArchiveSupport(false);
         String layerName = SubstrateOptions.Name.getValue(values);
         if (buildingSharedLayer) {
-            writeLayerArchiveSupport = new WriteLayerArchiveSupport(layerName, imageClassLoader.classLoaderSupport, builderTempDir, archiveSupport);
+            boolean enableLogging = LayeredImageOptions.LayeredImageDiagnosticOptions.LogLayeredArchiving.getValue(values);
+            writeLayerArchiveSupport = new WriteLayerArchiveSupport(layerName, imageClassLoader.classLoaderSupport, builderTempDir, archiveSupport, enableLogging);
         }
         LoadLayerArchiveSupport loadLayerArchiveSupport = null;
         SharedLayerSnapshot.Reader snapshot = null;
         List<FileChannel> graphs = List.of();
         if (buildingExtensionLayer) {
             Path layerFileName = getLayerUseValue(values);
-            loadLayerArchiveSupport = new LoadLayerArchiveSupport(layerName, layerFileName, builderTempDir, archiveSupport, imageClassLoader.platform);
-            boolean strict = SubstrateOptions.LayerOptionVerification.getValue(values);
-            boolean verbose = SubstrateOptions.LayerOptionVerificationVerbose.getValue(values);
+            boolean enableLogging = LayeredImageOptions.LayeredImageDiagnosticOptions.LogLayeredArchiving.getValue(values);
+            loadLayerArchiveSupport = new LoadLayerArchiveSupport(layerName, layerFileName, builderTempDir, archiveSupport, imageClassLoader.platform, enableLogging);
+            boolean strict = LayeredImageOptions.LayeredImageDiagnosticOptions.LayerOptionVerification.getValue(values);
+            boolean verbose = LayeredImageOptions.LayeredImageDiagnosticOptions.LayerOptionVerificationVerbose.getValue(values);
             loadLayerArchiveSupport.verifyCompatibility(imageClassLoader.classLoaderSupport, collectLayerVerifications(imageClassLoader), strict, verbose);
             try {
                 graphs = List.of(FileChannel.open(loadLayerArchiveSupport.getSnapshotGraphsPath()));
@@ -373,10 +472,10 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
             }
         }
 
-        Function<Class<?>, SingletonTrait[]> singletonTraitInjector = null;
+        Function<Class<?>, SingletonTrait<?>[]> singletonTraitInjector = null;
         if (buildingImageLayer) {
-            var applicationLayerOnlySingletons = SubstrateOptions.ApplicationLayerOnlySingletons.getValue(values);
-            SingletonTrait[] appLayerOnly = new SingletonTrait[]{SingletonLayeredInstallationKind.APP_LAYER_ONLY};
+            var applicationLayerOnlySingletons = LayeredImageOptions.ApplicationLayerOnlySingletons.getValue(values);
+            LayeredInstallationKindSingletonTrait[] appLayerOnly = new LayeredInstallationKindSingletonTrait[]{APP_LAYER_ONLY_TRAIT};
             singletonTraitInjector = (key) -> {
                 if (applicationLayerOnlySingletons.contains(key.getName())) {
                     return appLayerOnly;
@@ -425,8 +524,8 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
         nativeLibs.addDynamicNonJniLibrary(libName);
     }
 
-    public static void registerBaseLayerTypes(BigBang bb, MetaAccessProvider originalMetaAccess, NativeImageClassLoaderSupport classLoaderSupport) {
-        classLoaderSupport.getClassesToIncludeUnconditionally().forEach(clazz -> bb.tryRegisterTypeForBaseImage(originalMetaAccess.lookupJavaType(clazz)));
+    public static void registerBaseLayerTypes(BigBang bb, GuestTypes guestTypes) {
+        guestTypes.getTypesToIncludeUnconditionally().forEach(bb::tryRegisterTypeForBaseImage);
     }
 
     /**
@@ -437,7 +536,7 @@ public final class HostedImageLayerBuildingSupport extends ImageLayerBuildingSup
      * native library need to be in the same layer. This method iterate through all native methods
      * and try to include them in the current layer.
      */
-    public static void registerNativeMethodsForBaseImage(BigBang bb, MetaAccessProvider originalMetaAccess, ImageClassLoader loader) {
-        loader.getApplicationClasses().forEach(clazz -> bb.tryRegisterNativeMethodsForBaseImage(originalMetaAccess.lookupJavaType(clazz)));
+    public static void registerNativeMethodsForBaseImage(BigBang bb, GuestTypes loader) {
+        loader.getApplicationTypes().forEach(bb::tryRegisterNativeMethodsForBaseImage);
     }
 }

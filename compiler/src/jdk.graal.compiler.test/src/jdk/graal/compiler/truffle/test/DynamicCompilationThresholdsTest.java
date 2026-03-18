@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2025, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,8 +25,11 @@
 package jdk.graal.compiler.truffle.test;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.LinkedList;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -59,7 +62,6 @@ public class DynamicCompilationThresholdsTest {
         private final int id;
         private final Source source;
         private final CountDownLatch compilationDoneLatch = new CountDownLatch(1);
-        private final CountDownLatch compilationStartedLatch = new CountDownLatch(1);
         private final CountDownLatch compilationGoLatch = new CountDownLatch(1);
 
         SourceCompilation(int id, Source source) {
@@ -75,6 +77,7 @@ public class DynamicCompilationThresholdsTest {
         Assume.assumeTrue(Truffle.getRuntime() instanceof OptimizedTruffleRuntime);
         Runnable test = () -> {
             OptimizedTruffleRuntime optimizedTruffleRuntime = (OptimizedTruffleRuntime) Truffle.getRuntime();
+            BlockingQueue<SourceCompilation> startedCompilationsQueue = new ArrayBlockingQueue<>(30);
             OptimizedTruffleRuntimeListener listener = new OptimizedTruffleRuntimeListener() {
                 @Override
                 public void onCompilationSuccess(OptimizedCallTarget target, AbstractCompilationTask task, TruffleCompilerListener.GraphInfo graph,
@@ -97,7 +100,7 @@ public class DynamicCompilationThresholdsTest {
                 @Override
                 public void onCompilationStarted(OptimizedCallTarget target, AbstractCompilationTask task) {
                     if (getSourceCompilation(target) instanceof SourceCompilation compilation) {
-                        compilation.compilationStartedLatch.countDown();
+                        startedCompilationsQueue.add(compilation);
                         try {
                             compilation.compilationGoLatch.await();
                         } catch (InterruptedException ie) {
@@ -116,9 +119,11 @@ public class DynamicCompilationThresholdsTest {
                             .option("engine.DynamicCompilationThresholdsMaxNormalLoad", "20") //
                             .option("engine.DynamicCompilationThresholdsMinNormalLoad", "10") //
                             .option("engine.DynamicCompilationThresholdsMinScale", "0.1") //
+                            .option("engine.TraversingQueueStaleTaskDelay", "0") //
                             .option("engine.CompilerThreads", "1").build()) {
-                int firstCompilation = submitCompilation(context);
-                waitForCompilationStart(firstCompilation);
+                int firstCompilationId = submitCompilation(context);
+                SourceCompilation firstCompilation = startedCompilationsQueue.take();
+                Assert.assertEquals(firstCompilationId, firstCompilation.id);
                 LinkedList<Integer> scales = new LinkedList<>();
                 int firstScale = FixedPointMath.toFixedPoint(0.1);
                 Assert.assertEquals(firstScale, optimizedTruffleRuntime.compilationThresholdScale());
@@ -141,14 +146,14 @@ public class DynamicCompilationThresholdsTest {
                     Assert.assertEquals(scale, optimizedTruffleRuntime.compilationThresholdScale());
                     scales.push(scale);
                 }
-                allowCompilationToProceed(firstCompilation);
-                waitForCompilationDone(firstCompilation);
+                allowCompilationToProceed(firstCompilationId);
+                waitForCompilationDone(firstCompilationId);
                 scales.pop();
-                for (int i = firstCompilation + 1; i <= 30; i++) {
-                    waitForCompilationStart(i);
+                for (int i = firstCompilationId + 1; i <= 30; i++) {
+                    SourceCompilation compilation = startedCompilationsQueue.take();
                     Assert.assertEquals((int) scales.pop(), optimizedTruffleRuntime.compilationThresholdScale());
-                    allowCompilationToProceed(i);
-                    waitForCompilationDone(i);
+                    allowCompilationToProceed(compilation.id);
+                    waitForCompilationDone(compilation.id);
                 }
                 Assert.assertTrue(scales.isEmpty());
             } catch (IOException | InterruptedException e) {
@@ -157,17 +162,11 @@ public class DynamicCompilationThresholdsTest {
                 optimizedTruffleRuntime.removeListener(listener);
             }
         };
-        SubprocessTestUtils.newBuilder(DynamicCompilationThresholdsTest.class, test).run();
+        SubprocessTestUtils.newBuilder(DynamicCompilationThresholdsTest.class, test).prefixVmOption("-Dpolyglot.engine.TraversingQueueStaleTaskDelay=0").timeout(Duration.ofMinutes(10)).run();
     }
 
     private void allowCompilationToProceed(int id) throws InterruptedException {
         compilationMap.get(id).compilationGoLatch.countDown();
-    }
-
-    private void waitForCompilationStart(int id) throws InterruptedException {
-        if (!compilationMap.get(id).compilationStartedLatch.await(5, TimeUnit.MINUTES)) {
-            throw new AssertionError("Compilation of source " + id + " did not start in time");
-        }
     }
 
     private void waitForCompilationDone(int id) throws InterruptedException {

@@ -32,11 +32,10 @@ import static jdk.graal.compiler.debug.GraalError.unimplementedOverride;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.collections.Pair;
 
 import com.oracle.svm.core.ReservedRegisters;
@@ -66,7 +65,7 @@ import com.oracle.svm.core.nodes.SafepointCheckNode;
 import com.oracle.svm.core.thread.RecurringCallbackSupport;
 import com.oracle.svm.core.thread.SafepointCheckCounter;
 import com.oracle.svm.core.thread.VMThreads;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.shadowed.org.bytedeco.llvm.LLVM.LLVMBasicBlockRef;
 import com.oracle.svm.shadowed.org.bytedeco.llvm.LLVM.LLVMTypeRef;
 import com.oracle.svm.shadowed.org.bytedeco.llvm.LLVM.LLVMValueRef;
@@ -141,7 +140,7 @@ public class NodeLLVMBuilder implements NodeLIRBuilderTool, SubstrateNodeLIRBuil
     private final DebugInfoBuilder debugInfoBuilder;
 
     private Map<Node, LLVMValueWrapper> valueMap = new HashMap<>();
-    private final Set<BasicBlock<?>> processedBlocks = new HashSet<>();
+    private final EconomicSet<BasicBlock<?>> processedBlocks = EconomicSet.create();
     private Map<ValuePhiNode, LLVMValueRef> backwardsPhi = new HashMap<>();
     private long nextCGlobalId = 0L;
 

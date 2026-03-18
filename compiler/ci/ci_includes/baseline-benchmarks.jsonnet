@@ -9,7 +9,7 @@
   local hotspot_builds = std.flattenArrays([
     [
       c.weekly + hw.x52 + jdk + cc.c2 + suite,
-      c.weekly + hw.a12c + jdk + cc.c2 + suite
+      c.weekly + hw.hr350a_or_osprey(suite.suite) + jdk + cc.c2 + suite
     ]
   for jdk in cc.product_jdks
   for suite in bench.groups.all_suites
@@ -18,9 +18,9 @@
   local hotspot_profiling_builds = std.flattenArrays([
     [
     c.on_demand + hw.x52  + jdk + cc.c2 + suite + cc.enable_profiling    + { job_prefix:: "bench-compiler-profiling" },
-    c.on_demand + hw.a12c + jdk + cc.c2 + suite + cc.enable_profiling    + { job_prefix:: "bench-compiler-profiling" },
+    c.on_demand + hw.hr350a_or_osprey(suite.suite) + jdk + cc.c2 + suite + cc.enable_profiling    + { job_prefix:: "bench-compiler-profiling" },
     c.on_demand + hw.x52  + jdk + cc.c2 + suite + cc.footprint_tracking  + { job_prefix:: "bench-compiler-footprint" },
-    c.on_demand + hw.a12c + jdk + cc.c2 + suite + cc.footprint_tracking  + { job_prefix:: "bench-compiler-footprint" },
+    c.on_demand + hw.hr350a_or_osprey(suite.suite) + jdk + cc.c2 + suite + cc.footprint_tracking  + { job_prefix:: "bench-compiler-footprint" },
     c.monthly + hw.x52_root + jdk + cc.c2 + suite + cc.energy_tracking   + { job_prefix:: "bench-compiler-energy" }
     ]
   for jdk in cc.product_jdks
@@ -37,7 +37,7 @@
   ])),
 
   local weekly_forks_aarch64_builds = std.flattenArrays([
-    bc.generate_fork_builds(c.weekly + hw.a12c + jdk + cc.c2 + suite)
+    bc.generate_fork_builds(c.weekly + hw.hr350a_or_osprey(suite.suite) + jdk + cc.c2 + suite)
   for jdk in cc.product_jdks
   for suite in bench.groups.weekly_forks_suites
   ]),
@@ -64,14 +64,6 @@
     ]
   for jdk in cc.product_jdks
   for suite in bench.groups.main_suites
-  ]) + std.flattenArrays([
-    [
-    c.monthly + hw.x52 + jdk + cc.c2                         + cc.serialgc_mode + bench.microservice_benchmarks,
-    c.monthly + hw.x52 + jdk + cc.c2                         + cc.pargc_mode    + bench.microservice_benchmarks,
-    c.monthly + hw.x52 + jdk + cc.c2                         + cc.zgc_mode      + bench.microservice_benchmarks,
-    c.monthly + hw.x52 + jdk + cc.c2                         + cc.shenandoah_mode      + bench.microservice_benchmarks,
-    ]
-  for jdk in cc.product_jdks
   ]),
   local all_builds = hotspot_builds + hotspot_profiling_builds +
     weekly_forks_amd64_builds + weekly_forks_aarch64_builds + economy_builds + no_tiered_builds + gc_variants_builds,

@@ -27,8 +27,10 @@ package com.oracle.svm.core.reflect;
 import java.lang.reflect.InvocationTargetException;
 
 import com.oracle.svm.core.hub.crema.CremaSupport;
-import com.oracle.svm.core.jdk.InternalVMMethod;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.espresso.shared.meta.MethodAccess;
+import com.oracle.svm.espresso.shared.resolver.CallKind;
+import com.oracle.svm.guest.staging.jdk.InternalVMMethod;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.internal.reflect.MethodAccessor;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -41,13 +43,14 @@ public final class CremaMethodAccessor extends AbstractCremaAccessor implements 
     }
 
     @Override
-    public Object invoke(Object obj, Object[] args) throws IllegalArgumentException, InvocationTargetException {
-        if (!targetMethod.isStatic()) {
-            verifyReceiver(obj);
-            verifyArguments(args);
-        } else {
+    public Object invoke(Object obj, Object[] initialArguments) throws IllegalArgumentException, InvocationTargetException {
+        Object[] args = initialArguments == null ? NO_ARGS : initialArguments;
+        if (targetMethod.isStatic()) {
             verifyArguments(args);
             ensureDeclaringClassInitialized();
+        } else {
+            verifyReceiver(obj);
+            verifyArguments(args);
         }
 
         Object[] finalArgs;
@@ -59,7 +62,7 @@ public final class CremaMethodAccessor extends AbstractCremaAccessor implements 
             System.arraycopy(args, 0, finalArgs, 1, args.length);
         }
         try {
-            return CremaSupport.singleton().execute(targetMethod, finalArgs);
+            return CremaSupport.singleton().execute(targetMethod, finalArgs, CallKind.getCallKind((MethodAccess<?, ?, ?>) targetMethod));
         } catch (Throwable t) {
             throw new InvocationTargetException(t);
         }

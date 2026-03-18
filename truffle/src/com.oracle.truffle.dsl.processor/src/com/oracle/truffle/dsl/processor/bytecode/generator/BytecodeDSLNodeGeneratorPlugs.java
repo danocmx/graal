@@ -54,14 +54,13 @@ import javax.lang.model.type.TypeMirror;
 
 import com.oracle.truffle.dsl.processor.ProcessorContext;
 import com.oracle.truffle.dsl.processor.TruffleTypes;
-import com.oracle.truffle.dsl.processor.bytecode.generator.BytecodeRootNodeElement.InterpreterTier;
 import com.oracle.truffle.dsl.processor.bytecode.model.BytecodeDSLModel;
-import com.oracle.truffle.dsl.processor.bytecode.model.ConstantOperandModel;
 import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel;
 import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.ImmediateKind;
 import com.oracle.truffle.dsl.processor.bytecode.model.InstructionModel.InstructionImmediate;
+import com.oracle.truffle.dsl.processor.bytecode.model.Signature;
+import com.oracle.truffle.dsl.processor.bytecode.model.Signature.Operand;
 import com.oracle.truffle.dsl.processor.bytecode.parser.BytecodeDSLParser;
-import com.oracle.truffle.dsl.processor.bytecode.parser.SpecializationSignatureParser.SpecializationSignature;
 import com.oracle.truffle.dsl.processor.expression.DSLExpression.Variable;
 import com.oracle.truffle.dsl.processor.generator.BitSet;
 import com.oracle.truffle.dsl.processor.generator.FlatNodeGenFactory;
@@ -75,11 +74,9 @@ import com.oracle.truffle.dsl.processor.java.model.CodeExecutableElement;
 import com.oracle.truffle.dsl.processor.java.model.CodeTree;
 import com.oracle.truffle.dsl.processor.java.model.CodeTreeBuilder;
 import com.oracle.truffle.dsl.processor.java.model.CodeVariableElement;
-import com.oracle.truffle.dsl.processor.model.ImplicitCastData;
 import com.oracle.truffle.dsl.processor.model.NodeChildData;
 import com.oracle.truffle.dsl.processor.model.NodeExecutionData;
 import com.oracle.truffle.dsl.processor.model.SpecializationData;
-import com.oracle.truffle.dsl.processor.model.TemplateMethod;
 import com.oracle.truffle.dsl.processor.parser.NodeParser;
 
 public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
@@ -109,13 +106,9 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
     @Override
     public List<? extends VariableElement> additionalArguments() {
         List<CodeVariableElement> result = new ArrayList<>();
-        if (model.hasYieldOperation()) {
-            result.add(new CodeVariableElement(context.getTypes().VirtualFrame, "$stackFrame"));
-        }
         result.add(new CodeVariableElement(nodeType, "$bytecode"));
         result.add(new CodeVariableElement(context.getType(byte[].class), "$bc"));
-        result.add(new CodeVariableElement(context.getType(int.class), "$bci"));
-        result.add(new CodeVariableElement(context.getType(int.class), "$sp"));
+        result.add(new CodeVariableElement(rootNode.getBytecodeIndexType(), "$bci"));
         return result;
     }
 
@@ -137,19 +130,7 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
     @Override
     public ChildExecutionResult createExecuteChild(FlatNodeGenFactory factory, CodeTreeBuilder builder, FrameState originalFrameState, FrameState frameState, NodeExecutionData execution,
                     LocalVariable targetValue) {
-
-        CodeTreeBuilder b = builder.create();
-
-        b.string(targetValue.getName(), " = ");
-
-        int index = execution.getIndex();
-        boolean throwsUnexpectedResult = buildChildExecution(b, frameState, stackFrame(), index);
-
-        return new ChildExecutionResult(b.build(), throwsUnexpectedResult);
-    }
-
-    public boolean canBoxingEliminateType(NodeExecutionData currentExecution, TypeMirror type) {
-        return model.isBoxingEliminated(type);
+        throw new AssertionError("Should not be reachable");
     }
 
     public void beforeCallSpecialization(FlatNodeGenFactory nodeFactory, CodeTreeBuilder builder, FrameState frameState,
@@ -157,98 +138,8 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
 
         InterpreterTier tier = frameState.getMode() == NodeExecutionMode.UNCACHED ? InterpreterTier.UNCACHED : InterpreterTier.CACHED;
         if (BytecodeRootNodeElement.isStoreBciBeforeSpecialization(model, tier, instruction, specialization)) {
-            BytecodeRootNodeElement.storeBciInFrame(builder, "frameValue", "$bci");
+            rootNode.emitWriteBytecodeIndexToFrame(builder, "frameValue", "$bci");
         }
-    }
-
-    private boolean buildChildExecution(CodeTreeBuilder b, FrameState frameState, String frame, int specializationIndex) {
-        int operandIndex = specializationIndex;
-        if (operandIndex < instruction.signature.constantOperandsBeforeCount) {
-            ConstantOperandModel constantOperand = instruction.operation.constantOperands.before().get(operandIndex);
-            InstructionImmediate imm = instruction.constantOperandImmediates.get(constantOperand);
-            if (imm == null) {
-                throw new AssertionError("Could not find an immediate for constant operand " + constantOperand + " on instruction " + instruction);
-            }
-            b.tree(rootNode.readConstantImmediate("$bc", "$bci", "$bytecode", imm, constantOperand.type()));
-            return false;
-        }
-        operandIndex -= instruction.signature.constantOperandsBeforeCount;
-        int operandCount = instruction.signature.dynamicOperandCount;
-        if (operandIndex < operandCount) {
-            TypeMirror specializedType = instruction.signature.getSpecializedType(operandIndex);
-            TypeMirror genericType = instruction.signature.getGenericType(operandIndex);
-            TypeMirror specializationTargetType;
-            TypeMirror expectedType = instruction.isQuickening() ? specializedType : genericType;
-
-            if (instruction.isQuickening()) {
-                if (instruction.filteredSpecializations != null) {
-                    specializationTargetType = instruction.getSpecializationSignature().signature().getDynamicOperandTypes().get(operandIndex);
-                } else {
-                    specializationTargetType = specializedType;
-                }
-                expectedType = specializedType;
-            } else {
-                specializationTargetType = genericType;
-                expectedType = genericType;
-            }
-
-            String stackIndex = "$sp - " + (operandCount - operandIndex);
-            ImplicitCastData cast = instruction.nodeData.getTypeSystem().lookupCast(expectedType, specializationTargetType);
-
-            if (instruction.getQuickeningRoot().needsBoxingElimination(model, operandIndex)) {
-                if (frameState.getMode().isFastPath()) {
-                    b.startStatement();
-                    if (!ElementUtils.typeEquals(expectedType, specializedType)) {
-                        b.startStaticCall(rootNode.lookupExpectMethod(expectedType, specializedType));
-                    }
-                    if (cast != null) {
-                        b.startStaticCall(cast.getMethod());
-                    }
-
-                    BytecodeRootNodeElement.startExpectFrameUnsafe(b, frame, expectedType);
-                    b.string(stackIndex);
-                    b.end();
-
-                    if (cast != null) {
-                        b.end();
-                    }
-
-                    if (!ElementUtils.typeEquals(expectedType, specializedType)) {
-                        b.end();
-                    }
-                    b.end();
-                    return true;
-                } else {
-                    if (!ElementUtils.isObject(genericType)) {
-                        b.cast(specializedType);
-                    }
-                    BytecodeRootNodeElement.startGetFrameUnsafe(b, frame, null);
-                    b.string(stackIndex);
-                    b.end();
-                    return false;
-                }
-            } else {
-                if (!ElementUtils.isObject(genericType)) {
-                    b.cast(expectedType);
-                }
-                b.string(BytecodeRootNodeElement.uncheckedGetFrameObject(frame, stackIndex));
-                return false;
-            }
-        }
-        operandIndex -= instruction.signature.dynamicOperandCount;
-
-        int constantOperandAfterCount = instruction.signature.constantOperandsAfterCount;
-        if (operandIndex < constantOperandAfterCount) {
-            ConstantOperandModel constantOperand = instruction.operation.constantOperands.after().get(operandIndex);
-            InstructionImmediate imm = instruction.constantOperandImmediates.get(constantOperand);
-            if (imm == null) {
-                throw new AssertionError("Could not find an immediate for constant operand " + constantOperand + " on instruction " + instruction);
-            }
-            b.tree(rootNode.readConstantImmediate("$bc", "$bci", "$bytecode", imm, constantOperand.type()));
-            return false;
-        }
-
-        throw new AssertionError("index=" + specializationIndex + ", signature=" + instruction.signature);
     }
 
     public CodeExecutableElement getQuickenMethod() {
@@ -279,10 +170,15 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
     }
 
     public CodeTree bindExpressionValue(FrameState frameState, Variable variable) {
+        String bci;
+        if (ElementUtils.typeEquals(rootNode.getBytecodeIndexType(), context.getType(int.class))) {
+            bci = "$bci";
+        } else {
+            bci = "(int) $bci";
+        }
         switch (variable.getName()) {
             case NodeParser.SYMBOL_THIS:
             case NodeParser.SYMBOL_NODE:
-
                 if (frameState.getMode().isUncached()) {
                     return CodeTreeBuilder.singleString("$bytecode");
                 } else if (instruction.canUseNodeSingleton()) {
@@ -305,10 +201,10 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
             case BytecodeDSLParser.SYMBOL_ROOT_NODE:
                 return CodeTreeBuilder.singleString("$bytecode.getRoot()");
             case BytecodeDSLParser.SYMBOL_BYTECODE_INDEX:
-                return CodeTreeBuilder.singleString("$bci");
+                return CodeTreeBuilder.singleString(bci);
             case BytecodeDSLParser.SYMBOL_CONTINUATION_ROOT:
                 InstructionImmediate continuationIndex = instruction.getImmediates(ImmediateKind.CONSTANT).getLast();
-                return CodeTreeBuilder.createBuilder().tree(rootNode.readConstantImmediate("$bc", "$bci", "$bytecode", continuationIndex, rootNode.getContinuationRootNodeImpl().asType())).build();
+                return CodeTreeBuilder.createBuilder().tree(rootNode.readConstantImmediate("$bc", bci, "$bytecode", continuationIndex, rootNode.getContinuationRootNodeImpl().asType())).build();
             default:
                 return NodeGeneratorPlugs.super.bindExpressionValue(frameState, variable);
 
@@ -322,20 +218,21 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
         if (model.bytecodeDebugListener) {
             method.addParameter(new CodeVariableElement(rootNode.getAbstractBytecodeNode().asType(), "$bytecode"));
         }
+
         method.addParameter(new CodeVariableElement(context.getType(byte[].class), "$bc"));
-        method.addParameter(new CodeVariableElement(context.getType(int.class), "$bci"));
+        method.addParameter(new CodeVariableElement(rootNode.getBytecodeIndexType(), "$bci"));
 
         CodeTreeBuilder b = method.createBuilder();
         b.declaration(context.getType(short.class), "newInstruction");
         Set<Integer> boxingEliminated = new TreeSet<>();
         List<InstructionModel> relevantQuickenings = instruction.quickenedInstructions.stream() //
-                        .filter(q -> !q.isReturnTypeQuickening() /* selected only by parent */ && q.filteredSpecializations != null) //
+                        .filter(q -> !q.isReturnTypeQuickening() /* selected only by parent */ && q.getFilteredSpecializations() != null) //
                         .toList();
 
         for (InstructionModel quickening : relevantQuickenings) {
-            for (int index = 0; index < quickening.signature.dynamicOperandCount; index++) {
-                if (model.isBoxingEliminated(quickening.signature.getSpecializedType(index))) {
-                    boxingEliminated.add(index);
+            for (Operand operand : quickening.signature.dynamicOperands()) {
+                if (model.isBoxingEliminated(operand.type())) {
+                    boxingEliminated.add(operand.dynamicIndex());
                 }
             }
         }
@@ -379,18 +276,19 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
         boolean elseIf = false;
         for (InstructionModel quickening : relevantQuickenings) {
             elseIf = b.startIf(elseIf);
-            CodeTree activeCheck = factory.createOnlyActive(frameState, quickening.filteredSpecializations, instruction.nodeData.getReachableSpecializations());
+            CodeTree activeCheck = factory.createOnlyActive(frameState, quickening.getSpecializations(), instruction.nodeData.getReachableSpecializations());
             b.tree(activeCheck);
             String sep = activeCheck.isEmpty() ? "" : " && ";
 
-            SpecializationSignature specializationSignature = quickening.operation.getSpecializationSignature(quickening.filteredSpecializations);
-            List<TypeMirror> dynamicOperandTypes = specializationSignature.signature().getDynamicOperandTypes();
+            Signature specializationSignature = quickening.getCustomSpecializationSignature();
+            for (int dynamicValueIndex : boxingEliminated) {
+                Operand quickeningOperand = quickening.signature.dynamicOperands().get(dynamicValueIndex);
+                Operand specializationOperand = specializationSignature.dynamicOperands().get(dynamicValueIndex);
+                CodeTree check = factory.createIsImplicitTypeStateCheck(frameState,
+                                quickeningOperand.type(),
+                                specializationOperand.type(),
+                                quickeningOperand.index());
 
-            for (int valueIndex : boxingEliminated) {
-                TypeMirror specializedType = quickening.signature.getSpecializedType(valueIndex);
-                TypeMirror specializationTargetType = dynamicOperandTypes.get(valueIndex);
-                CodeTree check = factory.createIsImplicitTypeStateCheck(frameState, specializedType, specializationTargetType,
-                                valueIndex + specializationSignature.signature().constantOperandsBeforeCount);
                 if (check == null) {
                     continue;
                 }
@@ -401,7 +299,7 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
             }
 
             for (int valueIndex : boxingEliminated) {
-                TypeMirror specializedType = quickening.signature.getSpecializedType(valueIndex);
+                TypeMirror specializedType = quickening.signature.getDynamicOperandType(valueIndex);
                 if (model.isBoxingEliminated(specializedType)) {
                     b.newLine().string("  ", sep, "(");
                     b.string("newOperand" + valueIndex);
@@ -414,7 +312,7 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
             b.end().startBlock();
 
             for (int valueIndex : boxingEliminated) {
-                TypeMirror specializedType = quickening.signature.getSpecializedType(valueIndex);
+                TypeMirror specializedType = quickening.signature.getDynamicOperandType(valueIndex);
                 if (!model.isBoxingEliminated(specializedType)) {
                     b.startStatement();
                     b.string("newOperand" + valueIndex, " = undoQuickening(oldOperand" + valueIndex + ")");
@@ -428,7 +326,7 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
                 elseIf = false;
                 for (InstructionModel returnTypeQuickening : returnTypeQuickenings) {
                     elseIf = b.startIf(elseIf);
-                    b.startCall(BytecodeRootNodeElement.createIsQuickeningName(returnTypeQuickening.signature.returnType)).tree(BytecodeRootNodeElement.readInstruction("$bc", "$bci")).end();
+                    b.startCall(BytecodeRootNodeElement.createIsQuickeningName(returnTypeQuickening.signature.returnType())).tree(BytecodeRootNodeElement.readInstruction("$bc", "$bci")).end();
                     b.end().startBlock();
                     b.startStatement();
                     b.string("newInstruction = ").tree(rootNode.createInstructionConstant(returnTypeQuickening));
@@ -461,7 +359,7 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
             elseIf = false;
             for (InstructionModel returnTypeQuickening : returnTypeQuickenings) {
                 elseIf = b.startIf(elseIf);
-                b.startCall(BytecodeRootNodeElement.createIsQuickeningName(returnTypeQuickening.signature.returnType)).tree(BytecodeRootNodeElement.readInstruction("$bc", "$bci")).end();
+                b.startCall(BytecodeRootNodeElement.createIsQuickeningName(returnTypeQuickening.signature.returnType())).tree(BytecodeRootNodeElement.readInstruction("$bc", "$bci")).end();
                 b.end().startBlock();
                 b.startStatement();
                 b.string("newInstruction = ").tree(rootNode.createInstructionConstant(returnTypeQuickening));
@@ -554,10 +452,6 @@ public class BytecodeDSLNodeGeneratorPlugs implements NodeGeneratorPlugs {
             return Short.SIZE;
         }
         return NodeGeneratorPlugs.super.getMaxStateBitWidth();
-    }
-
-    private String stackFrame() {
-        return model.hasYieldOperation() ? "$stackFrame" : TemplateMethod.FRAME_NAME;
     }
 
 }

@@ -40,6 +40,7 @@
  */
 package com.oracle.truffle.api.strings;
 
+import static com.oracle.truffle.api.strings.TStringInternalNodes.CodePointIndexToRaw.codePointIndexToRaw;
 import static com.oracle.truffle.api.strings.TStringUnsafe.byteArrayBaseOffset;
 
 import java.lang.ref.Reference;
@@ -217,6 +218,15 @@ public final class MutableTruffleString extends AbstractTruffleString {
          * native pointer's life time, convert it to a managed string via
          * {@link MutableTruffleString.AsManagedNode} <b>before the native pointer is freed</b>.
          * </p>
+         *
+         * <p>
+         * Since GraalVM version 25.1, the native pointer may also be passed as a boxed long value
+         * in place of {@code pointerObject}. Note that in this case, the resulting
+         * {@link MutableTruffleString} cannot keep a reference an associated object for life-time
+         * tracking. The user is responsible for making sure the native buffer is not freed as long
+         * as the {@link MutableTruffleString} object is alive.
+         * </p>
+         *
          * <p>
          * If {@code copy} is {@code true}, the pointer's contents are copied to a Java byte array,
          * and the pointer can be freed safely after the operation completes.
@@ -230,9 +240,10 @@ public final class MutableTruffleString extends AbstractTruffleString {
 
         @Specialization
         MutableTruffleString fromNativePointer(Object pointerObject, int byteOffset, int byteLength, Encoding enc, boolean copy,
-                        @Cached(value = "createInteropLibrary()", uncached = "getUncachedInteropLibrary()") Node interopLibrary) {
+                        @Cached(value = "createInteropLibrary()", uncached = "getUncachedInteropLibrary()") Node interopLibrary,
+                        @Cached InlinedConditionProfile rawPointerProfile) {
             checkByteLength(byteLength, enc);
-            NativePointer nativePointer = NativePointer.create(this, pointerObject, interopLibrary);
+            NativePointer nativePointer = NativePointer.create(this, pointerObject, interopLibrary, rawPointerProfile);
             final Object data;
             final int offset;
             if (copy) {
@@ -485,7 +496,6 @@ public final class MutableTruffleString extends AbstractTruffleString {
                         @Cached InlinedConditionProfile nativeProfileA,
                         @Cached InlinedConditionProfile managedProfileB,
                         @Cached InlinedConditionProfile nativeProfileB,
-                        @Cached TStringInternalNodes.ConcatMaterializeBytesNode materializeBytesNode,
                         @Cached InlinedBranchProfile outOfMemoryProfile) {
             a.checkEncoding(expectedEncoding);
             b.checkEncoding(expectedEncoding);
@@ -526,7 +536,7 @@ public final class MutableTruffleString extends AbstractTruffleString {
 
                 int length = TruffleString.ConcatNode.addByteLengths(this, lengthA, lengthB, expectedEncoding.naturalStride, outOfMemoryProfile);
                 int offset = 0;
-                byte[] array = materializeBytesNode.execute(this,
+                byte[] array = TStringInternalNodes.concatMaterializeBytes(this,
                                 arrayA, offsetA, lengthA, strideA,
                                 arrayB, offsetB, lengthB, strideB, expectedEncoding, length, expectedEncoding.naturalStride);
                 return MutableTruffleString.create(array, offset, length, expectedEncoding);
@@ -589,9 +599,10 @@ public final class MutableTruffleString extends AbstractTruffleString {
         MutableTruffleString substring(AbstractTruffleString a, int fromIndex, int length, Encoding encoding,
                         @Cached InlinedConditionProfile managedProfileA,
                         @Cached InlinedConditionProfile nativeProfileA,
-                        @Cached TStringInternalNodes.GetCodeRangeForIndexCalculationNode getCodeRangeANode,
-                        @Cached TStringInternalNodes.GetCodePointLengthNode getCodePointLengthNode,
-                        @Cached TStringInternalNodes.CodePointIndexToRawNode translateIndexNode,
+                        @Cached InlinedConditionProfile impreciseProfile,
+                        @Cached InlinedConditionProfile calcCodePointLengthProfile,
+                        @Cached InlinedConditionProfile fixedProfile,
+                        @Cached InlinedConditionProfile validProfile,
                         @Cached TruffleString.CopyToByteArrayNode copyToByteArrayNode) {
             a.checkEncoding(encoding);
             Object dataA = a.data();
@@ -612,10 +623,10 @@ public final class MutableTruffleString extends AbstractTruffleString {
                 final int lengthA = a.length();
                 final int strideA = a.stride();
 
-                a.boundsCheckRegion(this, arrayA, offsetA, fromIndex, length, encoding, getCodePointLengthNode);
-                final int codeRangeA = getCodeRangeANode.execute(this, a, arrayA, offsetA, encoding);
-                int fromIndexRaw = translateIndexNode.execute(this, a, arrayA, offsetA, lengthA, strideA, codeRangeA, encoding, 0, fromIndex, length == 0);
-                int lengthRaw = translateIndexNode.execute(this, a, arrayA, offsetA, lengthA, strideA, codeRangeA, encoding, fromIndexRaw, length, true);
+                a.boundsCheckRegion(this, arrayA, offsetA, fromIndex, length, encoding, calcCodePointLengthProfile);
+                final int codeRangeA = TStringInternalNodes.getCodeRangeForIndexCalculation(this, a, arrayA, offsetA, encoding, impreciseProfile);
+                int fromIndexRaw = codePointIndexToRaw(this, a, arrayA, offsetA, lengthA, strideA, codeRangeA, encoding, 0, fromIndex, length == 0, fixedProfile, validProfile);
+                int lengthRaw = codePointIndexToRaw(this, a, arrayA, offsetA, lengthA, strideA, codeRangeA, encoding, fromIndexRaw, length, true, fixedProfile, validProfile);
                 int stride = encoding.naturalStride;
                 return SubstringByteIndexNode.createSubstring(a, fromIndexRaw << stride, lengthRaw << stride, encoding, copyToByteArrayNode);
             } finally {

@@ -24,23 +24,20 @@
  */
 package com.oracle.svm.core.thread;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
-
 import java.util.concurrent.TimeUnit;
 
-import org.graalvm.nativeimage.CurrentIsolate;
-import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Threading;
 import org.graalvm.nativeimage.impl.ThreadingSupport;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.thread.RecurringCallbackSupport.RecurringCallbackTimer;
-
-import jdk.graal.compiler.api.replacements.Fold;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.RuntimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 @AutomaticallyRegisteredImageSingleton(ThreadingSupport.class)
+@SingletonTraits(access = RuntimeAccessOnly.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public class ThreadingSupportImpl implements ThreadingSupport {
     private static final String ENABLE_SUPPORT_OPTION = SubstrateOptionsParser.commandArgument(RecurringCallbackSupport.ConcealedOptions.SupportRecurringCallback, "+");
 
@@ -50,40 +47,23 @@ public class ThreadingSupportImpl implements ThreadingSupport {
      * will be overwritten.
      */
     @Override
+    @Deprecated(since = "25.1")
+    @SuppressWarnings("deprecation")
     public void registerRecurringCallback(long interval, TimeUnit unit, Threading.RecurringCallback callback) {
-        IsolateThread thread = CurrentIsolate.getCurrentThread();
         if (callback != null) {
             if (!RecurringCallbackSupport.isEnabled()) {
                 throw new UnsupportedOperationException("Recurring callbacks must be enabled during image build with option " + ENABLE_SUPPORT_OPTION);
             }
 
             long intervalNanos = unit.toNanos(interval);
-            if (intervalNanos < 1) {
-                throw new IllegalArgumentException("The intervalNanos field is less than one.");
+            if (intervalNanos <= 0) {
+                throw new IllegalArgumentException("The interval must be greater than zero.");
             }
 
-            RecurringCallbackTimer callbackTimer = RecurringCallbackSupport.createCallbackTimer(intervalNanos, callback);
-            RecurringCallbackSupport.installCallback(thread, callbackTimer, true);
+            RecurringCallbackSupport.uninstallCallback();
+            RecurringCallbackSupport.installCallback(intervalNanos, callback);
         } else if (RecurringCallbackSupport.isEnabled()) {
-            RecurringCallbackSupport.uninstallCallback(thread);
+            RecurringCallbackSupport.uninstallCallback();
         }
-    }
-
-    // GR-63737 only called from legacy code
-    @Fold
-    public static boolean isRecurringCallbackSupported() {
-        return RecurringCallbackSupport.isEnabled();
-    }
-
-    // GR-63737 only called from legacy code
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public static void pauseRecurringCallback(String reason) {
-        RecurringCallbackSupport.suspendCallbackTimer(reason);
-    }
-
-    // GR-63737 only called from legacy code
-    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
-    public static void resumeRecurringCallbackAtNextSafepoint() {
-        RecurringCallbackSupport.resumeCallbackTimerAtNextSafepointCheck();
     }
 }

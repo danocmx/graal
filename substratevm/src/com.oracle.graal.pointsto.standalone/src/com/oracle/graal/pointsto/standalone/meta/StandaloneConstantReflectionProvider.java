@@ -26,25 +26,70 @@
 
 package com.oracle.graal.pointsto.standalone.meta;
 
+import java.util.Objects;
+import java.util.concurrent.ForkJoinPool;
+
+import com.oracle.graal.pointsto.heap.ImageHeapArray;
+import com.oracle.graal.pointsto.heap.ImageHeapConstant;
 import com.oracle.graal.pointsto.meta.AnalysisField;
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.graal.pointsto.meta.AnalysisUniverse;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
+import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
+import jdk.graal.compiler.debug.GraalError;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.MemoryAccessProvider;
 import jdk.vm.ci.meta.MethodHandleAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+/**
+ * A {@link ConstantReflectionProvider} implementation for standalone use.
+ */
 public class StandaloneConstantReflectionProvider implements ConstantReflectionProvider {
+    /**
+     * The analysis universe used by this provider.
+     */
     private final AnalysisUniverse universe;
+    /**
+     * The original {@link ConstantReflectionProvider} used by this provider.
+     */
     private final ConstantReflectionProvider original;
+    /**
+     * The {@link AnalysisField} representing the {@code ForkJoinPool.common} field. If not null,
+     * {@link #commonPoolSubstitution} should not be null either and each field access of
+     * ForkJoinPool.common in the compiled application will be replaced with this substitution.
+     */
+    private AnalysisField commonPoolField;
+    /**
+     * A substitution for the {@code ForkJoinPool.common} field used to prevent the pollution of
+     * analysis state with analysis tasks (the analysis itself is using {@link ForkJoinPool}.
+     */
+    private JavaConstant commonPoolSubstitution;
 
-    public StandaloneConstantReflectionProvider(AnalysisUniverse universe, ConstantReflectionProvider original) {
+    /**
+     * Creates a new {@link StandaloneConstantReflectionProvider} instance.
+     *
+     * @param aMetaAccess the analysis meta access
+     * @param universe the analysis universe
+     * @param original the original {@link ConstantReflectionProvider}
+     * @param originalSnippetReflection the original snippet reflection provider
+     * @param usingGuestContext true if a guest context is used to achieve isolation between the vm
+     *            performing the compilation and the compiled application
+     */
+    public StandaloneConstantReflectionProvider(AnalysisMetaAccess aMetaAccess, AnalysisUniverse universe, ConstantReflectionProvider original,
+                    SnippetReflectionProvider originalSnippetReflection, boolean usingGuestContext) {
         this.universe = universe;
         this.original = original;
+        if (!usingGuestContext) {
+            commonPoolField = aMetaAccess.lookupJavaField(ReflectionUtil.lookupField(ForkJoinPool.class, "common"));
+            commonPoolSubstitution = originalSnippetReflection.forObject(new ForkJoinPool());
+        }
     }
 
     @Override
@@ -54,7 +99,41 @@ public class StandaloneConstantReflectionProvider implements ConstantReflectionP
 
     @Override
     public Integer readArrayLength(JavaConstant array) {
+        if (array instanceof ImageHeapConstant) {
+            if (array instanceof ImageHeapArray) {
+                return ((ImageHeapArray) array).getLength();
+            }
+            return null;
+        }
+        if (array.getJavaKind() != JavaKind.Object || array.isNull()) {
+            return null;
+        }
         return original.readArrayLength(array);
+    }
+
+    @Override
+    public int identityHashCode(JavaConstant constant) {
+        JavaKind kind = Objects.requireNonNull(constant).getJavaKind();
+        if (kind != JavaKind.Object) {
+            throw new IllegalArgumentException("Constant has unexpected kind " + kind + ": " + constant);
+        }
+        if (constant.isNull()) {
+            /* System.identityHashCode is specified to return 0 when passed null. */
+            return 0;
+        }
+        if (!(constant instanceof ImageHeapConstant imageHeapConstant)) {
+            throw new IllegalArgumentException("Constant has unexpected type " + constant.getClass() + ": " + constant);
+        }
+        if (imageHeapConstant.hasIdentityHashCode()) {
+            return imageHeapConstant.getIdentityHashCode();
+        }
+        Object hostedObject = Objects.requireNonNull(universe.getSnippetReflection().asObject(Object.class, constant));
+        return System.identityHashCode(hostedObject);
+    }
+
+    @Override
+    public int makeIdentityHashCode(JavaConstant constant, int requestedValue) {
+        throw GraalError.unimplemented("makeIdentityHashCode");
     }
 
     @Override
@@ -63,16 +142,21 @@ public class StandaloneConstantReflectionProvider implements ConstantReflectionP
     }
 
     @Override
-    public final JavaConstant readFieldValue(ResolvedJavaField field, JavaConstant receiver) {
-        ResolvedJavaField wrappedField = ((AnalysisField) field).getWrapped();
-        JavaConstant ret = universe.getHostedValuesProvider().interceptHosted(original.readFieldValue(wrappedField, receiver));
-        if (ret == null) {
-            ret = wrappedField.getConstantValue();
-            if (ret == null) {
-                ret = JavaConstant.defaultForKind(wrappedField.getJavaKind());
-            }
+    public final JavaConstant readFieldValue(ResolvedJavaField f, JavaConstant receiver) {
+        AnalysisField field = (AnalysisField) f;
+
+        field.beforeFieldValueAccess();
+
+        if (field.equals(commonPoolField)) {
+            /*
+             * Replace the common pool value from the hosted heap with a new object. The common pool
+             * is used during analysis, so it can expose analysis metadata to the analysis itself,
+             * i.e., the analysis engine analyzing itself.
+             */
+            assert commonPoolSubstitution != null : "A substitution for the common pool must be provided if commonPoolField is set.";
+            return commonPoolSubstitution;
         }
-        return ret;
+        return universe.getHostedValuesProvider().interceptHosted(original.readFieldValue(field.wrapped, receiver));
     }
 
     @Override

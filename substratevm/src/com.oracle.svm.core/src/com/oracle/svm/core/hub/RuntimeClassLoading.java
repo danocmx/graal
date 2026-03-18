@@ -36,11 +36,11 @@ import org.graalvm.nativeimage.Platforms;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.hub.registry.ClassRegistries;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.option.HostedOptionKey;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.espresso.classfile.Constants;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.Option;
@@ -165,17 +165,9 @@ public class RuntimeClassLoading {
     public static RuntimeException throwNoBytecodeClasses(String className) {
         assert !PredefinedClassesSupport.hasBytecodeClasses() && !RuntimeClassLoading.isSupported();
         throw VMError.unsupportedFeature(
-                        "Classes cannot be defined at runtime by default when using ahead-of-time Native Image compilation. Tried to define class '" + className + "'" + System.lineSeparator() +
+                        "Classes cannot be defined at runtime by default when using ahead-of-time Native Image compilation. Tried to define class:" + System.lineSeparator() + System.lineSeparator() +
+                                        "    " + className + System.lineSeparator() + System.lineSeparator() +
                                         DEFINITION_NOT_SUPPORTED_MESSAGE);
-    }
-
-    public static DynamicHub getOrCreateArrayHub(DynamicHub hub) {
-        if (hub.getArrayHub() == null) {
-            VMError.guarantee(RuntimeClassLoading.isSupported());
-            // GR-63452
-            throw VMError.unimplemented("array hub creation");
-        }
-        return hub.getArrayHub();
     }
 
     public static final class ClassDefinitionInfo {

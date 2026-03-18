@@ -10,6 +10,14 @@ This changelog summarizes major changes between GraalVM SDK versions. The main f
 * GR-65404 Remove `PolyglotLauncher` as it is no longer used.
 * GR-68613: JavaScript polyglot isolate now includes support for the WebAssembly (Wasm) language.
 * GR-69590: Closing a garbage-collected engine or context now logs only the first failure by default. To log all failures, use `engine.CloseOnGCFailureAction.PrintAll`.
+* GR-35913: Updated the Javadoc of `Value#asHostObject()`, `Value#asNativePointer()`, and `Value#asProxyObject()` to clarify that these methods throw a `ClassCastException` rather than an `UnsupportedOperationException` when the value is not of the expected type.
+* GR-35913: `Value#asHostObject()` throws `UnsupportedOperationException` if object is allocated in a foreign heap.
+* GR-71402: Added `Value#hasStaticScope` and `Value#getStaticScope` returning the static scope representing static or class-level members associated with the meta object.
+* GR-71643: Added `Context.Builder#exceptionHandler(Consumer<PolyglotException>)` to customize how polyglot exceptions are handled before they are propagated to the host.
+* GR-69929: Reset a `CallTarget`’s execution profile when its associated nmethod is invalidated by HotSpot due to code cache “cold” flushing heuristics.
+* GR-72991: If a `PolyglotException` wraps an exception that has a cause according to the interop protocol (`InteropLibrary.getExceptionCause`), then calling `getCause()` on that `PolyglotExceptions' will return a `PolyglotException` representing that cause. Note that for `PolyglotException` objects that wrap a host exception that has a cause, this means that `getCause` returns a `PolyglotException` that wraps this cause.
+* GR-71940: `Engine.getVersion()` now return the Truffle API version rather than the GraalVM version.
+* GR-73953: Starting with Polyglot 25.1, the optimizing Truffle runtime is supported only with GraalVM 25.1 or later, including Oracle GraalVM and GraalVM Community Edition. It is no longer supported with GraalVM 25.0 or earlier, or on plain OpenJDK or Oracle JDK via jargraal (`org.graalvm.compiler:compiler` on `--upgrade-module-path`). The fallback runtime remains supported on standard JDKs and remains backwards compatible down to JDK 21, but runs without runtime compilation. If you need the optimizing runtime on plain OpenJDK or Oracle JDK, continue using the 25.0 LTS release.
 
 ## Version 25.0.0
 * GR-60636 Truffle now stops compiling when the code cache fills up on HotSpot. A warning is printed when that happens.
@@ -41,7 +49,6 @@ For usages of the module-path pass the `--enable-native-access=org.graalvm.truff
 * GR-57838 Added automatic inclusion of language and instrument resources for embedding Truffle languages in native image. We no longer produce a _resources_ folder next to the image by default. Documentation available [here](https://www.graalvm.org/reference-manual/embed-languages/#build-native-executables-from-polyglot-applications).
 * GR-61383 JLine3 upgrade from 3.23 to 3.28.
 * GR-59688 Added [Version#getComponent(int)](https://www.graalvm.org/truffle/javadoc/org/graalvm/home/Version.html#getComponent(int)) returning the numeric value of the version component at the specified index.
-
 ## Version 24.1.0
 * GR-51177 Enable random offsets of runtime compiled function entry points for the UNTRUSTED polyglot sandbox policy.
 * GR-51962 Added the system property `polyglot.engine.userResourceCache`, which enables embedders to override the default location of the resources cache folder for polyglot applications running on the JVM. By default, the resources cache folder is located in the `org.graalvm.polyglot` directory within the OS specific cache folder in the user's home directory. The main rationale behind this override is to accommodate applications running in containers where the user's home directory may not be writable.

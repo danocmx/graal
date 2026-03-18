@@ -24,12 +24,12 @@
  */
 package com.oracle.graal.pointsto.meta;
 
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Type;
 
 import com.oracle.graal.pointsto.infrastructure.ResolvedSignature;
 import com.oracle.svm.util.AnnotationsContainer;
 
+import jdk.graal.compiler.annotation.AnnotationValue;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.ConstantPool;
@@ -42,6 +42,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.Signature;
 import jdk.vm.ci.meta.SpeculationLog;
+import jdk.vm.ci.meta.annotation.AnnotationsInfo;
 
 /**
  * This type is used in the context of Layered Image, when loading a base layer in another layer.
@@ -69,7 +70,7 @@ public class BaseLayerMethod extends AnnotationsContainer implements ResolvedJav
     private final IntrinsicMethod methodHandleIntrinsic;
 
     public BaseLayerMethod(int id, AnalysisType declaringClass, String name, boolean isVarArgs, boolean isBridge, ResolvedSignature<AnalysisType> signature, boolean canBeStaticallyBound,
-                    boolean isConstructor, int modifiers, boolean isSynthetic, byte[] code, int codeSize, IntrinsicMethod methodHandleIntrinsic, Annotation[] annotations) {
+                    boolean isConstructor, int modifiers, boolean isSynthetic, byte[] code, int codeSize, IntrinsicMethod methodHandleIntrinsic, AnnotationValue[] annotations) {
         super(annotations);
         this.id = id;
         this.declaringClass = declaringClass.getWrapped();
@@ -195,11 +196,6 @@ public class BaseLayerMethod extends AnnotationsContainer implements ResolvedJav
     }
 
     @Override
-    public Annotation[][] getParameterAnnotations() {
-        throw unimplemented();
-    }
-
-    @Override
     public Type[] getGenericParameterTypes() {
         throw unimplemented();
     }
@@ -245,17 +241,12 @@ public class BaseLayerMethod extends AnnotationsContainer implements ResolvedJav
     }
 
     @Override
-    public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
+    public AnnotationsInfo getParameterAnnotationInfo() {
         throw unimplemented();
     }
 
     @Override
-    public Annotation[] getAnnotations() {
-        throw unimplemented();
-    }
-
-    @Override
-    public Annotation[] getDeclaredAnnotations() {
+    public AnnotationsInfo getAnnotationDefaultInfo() {
         throw unimplemented();
     }
 

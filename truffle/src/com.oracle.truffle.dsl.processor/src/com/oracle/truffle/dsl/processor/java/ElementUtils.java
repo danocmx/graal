@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -1104,6 +1104,9 @@ public class ElementUtils {
 
     public static String getEnclosedQualifiedName(DeclaredType mirror) {
         Element e = ((TypeElement) mirror.asElement()).getEnclosingElement();
+        if (e == null) {
+            throw new IllegalAccessError("Mirror does not contain an element " + mirror);
+        }
         if (e.getKind() == ElementKind.PACKAGE) {
             return ((PackageElement) e).getQualifiedName().toString();
         } else if (e.getKind().isInterface() || e.getKind().isClass()) {
@@ -1844,6 +1847,27 @@ public class ElementUtils {
         return !mods.contains(FINAL) && !mods.contains(STATIC) && (mods.contains(PUBLIC) || mods.contains(PROTECTED));
     }
 
+    public static boolean isFinal(ExecutableElement ex) {
+        Set<Modifier> mods = ex.getModifiers();
+        if (mods.contains(STATIC) || mods.contains(FINAL) || mods.contains(Modifier.PRIVATE)) {
+            return true;
+        }
+        if (ex.getKind() != ElementKind.METHOD) {
+            // only methods are overridable, constructors are not
+            return true;
+        }
+        Element enclosing = ex.getEnclosingElement();
+        if (enclosing != null) {
+            if (enclosing.getKind() == ElementKind.INTERFACE) {
+                return false;
+            }
+            if (enclosing.getModifiers().contains(Modifier.FINAL) || enclosing.getKind() == ElementKind.RECORD) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static List<ExecutableElement> getOverridableMethods(TypeElement t) {
         return ElementFilter.methodsIn(t.getEnclosedElements()).stream() //
                         .filter(ElementUtils::isOverridable).collect(Collectors.toList());
@@ -2249,12 +2273,30 @@ public class ElementUtils {
         return workaround;
     }
 
+    /**
+     * Searches the superclass hierarchy of {@code type} for an override of {@code method}, which
+     * belongs to the base class. Returns {@code null} if the resolved override is the original
+     * method.
+     */
     public static ExecutableElement findOverride(ExecutableElement method, TypeElement type) {
+        ExecutableElement override = findMethodInClassHierarchy(method, type);
+        if (override != null && !elementEquals(method, override)) {
+            return override;
+        }
+        return null;
+    }
+
+    /**
+     * Searches the superclass hierarchy of {@code type} for the most concrete implementation of
+     * {@code method}.
+     */
+    public static ExecutableElement findMethodInClassHierarchy(ExecutableElement method, TypeElement type) {
         TypeElement searchType = type;
-        while (searchType != null && !elementEquals(method.getEnclosingElement(), searchType)) {
-            ExecutableElement override = findInstanceMethod(searchType, method.getSimpleName().toString(), method.getParameters().stream().map(VariableElement::asType).toArray(TypeMirror[]::new));
-            if (override != null) {
-                return override;
+        while (searchType != null) {
+            ExecutableElement instanceMethod = findInstanceMethod(searchType, method.getSimpleName().toString(),
+                            method.getParameters().stream().map(VariableElement::asType).toArray(TypeMirror[]::new));
+            if (instanceMethod != null) {
+                return instanceMethod;
             }
             searchType = castTypeElement(searchType.getSuperclass());
         }

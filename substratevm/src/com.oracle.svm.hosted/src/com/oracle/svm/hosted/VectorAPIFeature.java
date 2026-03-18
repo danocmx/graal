@@ -48,12 +48,15 @@ import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.jdk.VectorAPIEnabled;
 import com.oracle.svm.core.jdk.VectorAPISupport;
-import com.oracle.svm.core.option.HostedOptionValues;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.jdk.VarHandleFeature;
-import com.oracle.svm.util.LogUtils;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.option.HostedOptionValues;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import jdk.graal.compiler.phases.util.Providers;
@@ -62,7 +65,9 @@ import jdk.internal.misc.Unsafe;
 import jdk.vm.ci.meta.JavaKind;
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class VectorAPIFeature implements InternalFeature {
+    // JVMCI migration blocked by GR-72591: Migrate VectorAPIFeature to terminus
 
     public static final String VECTOR_API_PACKAGE_NAME = "jdk.incubator.vector";
     public static final Class<?> PAYLOAD_CLASS = ReflectionUtil.lookupClass("jdk.internal.vm.vector.VectorSupport$VectorPayload");
@@ -94,6 +99,17 @@ public class VectorAPIFeature implements InternalFeature {
 
     @Override
     public void duringSetup(DuringSetupAccess access) {
+        /*
+         * Initialize fields of the VarHandle corresponding to the ValueLayout instances eagerly, so
+         * that during method handle intrinsification their loads can be constant-folded.
+         * 
+         * Note that we use an object replacer instead of an object reachability handler because we
+         * want the replacement to happen early, as part of method inlining before analysis. If we
+         * used an object reachability hook we'd only see its effects later, during analysis, when
+         * the VarHandle object itself is marked as reachable. The goal of intrinsification is to
+         * actually avoid making the VarHandle object itself reachable. See also VarHandleFeature
+         * where we use the same approach.
+         */
         access.registerObjectReplacer(VectorAPIFeature::eagerlyInitializeValueLayout);
     }
 

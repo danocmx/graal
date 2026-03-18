@@ -32,7 +32,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,29 +39,30 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.Platform;
 
-import com.oracle.svm.core.option.LayerVerifiedOption;
-import com.oracle.svm.core.option.LayerVerifiedOption.Kind;
-import com.oracle.svm.core.option.LayerVerifiedOption.Severity;
-import com.oracle.svm.core.option.OptionOrigin;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.ArchiveSupport;
 import com.oracle.svm.core.util.EnvVariableUtils;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.NativeImageClassLoaderSupport;
 import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport.OptionLayerVerificationRequests;
 import com.oracle.svm.hosted.imagelayer.LoadLayerArchiveSupport.ArgumentOrigin.NameValue;
 import com.oracle.svm.hosted.util.DiffTool;
 import com.oracle.svm.hosted.util.DiffTool.DiffResult;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.option.LayerVerifiedOption;
+import com.oracle.svm.shared.option.LayerVerifiedOption.Kind;
+import com.oracle.svm.shared.option.LayerVerifiedOption.Severity;
+import com.oracle.svm.shared.option.OptionOrigin;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 
 public class LoadLayerArchiveSupport extends LayerArchiveSupport {
 
     @SuppressWarnings("this-escape")
-    public LoadLayerArchiveSupport(String layerName, Path layerFile, Path tempDir, ArchiveSupport archiveSupport, Platform current) {
-        super(layerName, layerFile, tempDir.resolve(LAYER_TEMP_DIR_PREFIX + "load"), archiveSupport);
+    public LoadLayerArchiveSupport(String layerName, Path layerFile, Path tempDir, ArchiveSupport archiveSupport, Platform current, boolean enableLogging) {
+        super(layerName, layerFile, tempDir.resolve(LAYER_TEMP_DIR_PREFIX + "load"), archiveSupport, enableLogging);
         this.archiveSupport.expandJarToDir(layerFile, layerDir);
         layerProperties.loadAndVerify(current);
     }
@@ -228,7 +228,7 @@ public class LoadLayerArchiveSupport extends LayerArchiveSupport {
      * layer compatibility.
      */
     private static void verifyEnvironmentVariablesCompatibility(List<EnvironmentVariable> previousEnvVars, List<EnvironmentVariable> currentEnvVars, boolean strict) {
-        Set<EnvironmentVariable> currentEnvVarsSet = new HashSet<>(currentEnvVars);
+        EconomicSet<EnvironmentVariable> currentEnvVarsSet = EconomicSet.create(currentEnvVars);
         boolean violationsFound = false;
         String messagePrefix = strict ? "Error" : "Warning";
 
@@ -247,7 +247,7 @@ public class LoadLayerArchiveSupport extends LayerArchiveSupport {
     }
 
     private static void verifyBuildPathDigestsCompatibility(List<PathDigestEntry> previousPathDigests, List<PathDigestEntry> currentPathDigests, boolean strict) {
-        Set<String> currentDigests = new HashSet<>(currentPathDigests.size());
+        EconomicSet<String> currentDigests = EconomicSet.create(currentPathDigests.size());
         currentPathDigests.forEach(pathEntry -> currentDigests.add(pathEntry.digest()));
 
         List<PathDigestEntry> previousUnmatchedPathDigests = previousPathDigests.stream()
@@ -260,7 +260,7 @@ public class LoadLayerArchiveSupport extends LayerArchiveSupport {
             return;
         }
 
-        Set<String> currentPathNames = new HashSet<>(currentPathDigests.size());
+        EconomicSet<Path> currentPathNames = EconomicSet.create(currentPathDigests.size());
         currentPathDigests.forEach(pathEntry -> currentPathNames.add(pathEntry.path()));
         String messagePrefix = strict ? "Error" : "Warning";
         for (PathDigestEntry unmatchedDigestEntry : previousUnmatchedPathDigests) {

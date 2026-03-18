@@ -38,19 +38,19 @@ import org.graalvm.nativeimage.Platform;
 import com.oracle.svm.core.BuildArtifacts;
 import com.oracle.svm.core.BuildArtifacts.ArtifactType;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.ArchiveSupport;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.NativeImageClassLoaderSupport;
 import com.oracle.svm.hosted.NativeImageGenerator;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
 
 /* Builds an image layer, either initial or intermediate. */
 public class WriteLayerArchiveSupport extends LayerArchiveSupport {
     private final List<String> builderArguments;
     private final List<PathDigestEntry> buildPathDigests;
 
-    public WriteLayerArchiveSupport(String layerName, NativeImageClassLoaderSupport classLoaderSupport, Path tempDir, ArchiveSupport archiveSupport) {
-        super(layerName, classLoaderSupport.getLayerFile(), tempDir.resolve(LAYER_TEMP_DIR_PREFIX + "write"), archiveSupport);
+    public WriteLayerArchiveSupport(String layerName, NativeImageClassLoaderSupport classLoaderSupport, Path tempDir, ArchiveSupport archiveSupport, boolean enableLogging) {
+        super(layerName, classLoaderSupport.getLayerFile(), tempDir.resolve(LAYER_TEMP_DIR_PREFIX + "write"), archiveSupport, enableLogging);
         if (!layerName.startsWith(SHARED_LIB_NAME_PREFIX)) {
             throw UserError.abort("Shared layer library image name given with '" +
                             SubstrateOptionsParser.commandArgument(SubstrateOptions.Name, layerName) +

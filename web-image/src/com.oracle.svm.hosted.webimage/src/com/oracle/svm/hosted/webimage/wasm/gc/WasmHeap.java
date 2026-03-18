@@ -34,10 +34,10 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.MemoryWalker;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.genscavenge.AuxiliaryImageHeap;
 import com.oracle.svm.core.genscavenge.HeapImpl;
 import com.oracle.svm.core.genscavenge.ImageHeapInfo;
@@ -49,14 +49,18 @@ import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.RuntimeCodeInfoGCSupport;
 import com.oracle.svm.core.log.Log;
-import com.oracle.svm.core.option.RuntimeOptionKey;
+import com.oracle.svm.core.option.NotifyGCRuntimeOptionKey;
 import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.replacements.ReplacementsUtil;
-import jdk.graal.compiler.word.Word;
 
 /**
  * Equivalent of {@link HeapImpl} for the Wasm backend.
@@ -64,6 +68,7 @@ import jdk.graal.compiler.word.Word;
  * Reuses the logic for image heaps (see {@link ImageHeapInfo}, {@link ImageHeapWalker}), but is
  * otherwise independent from {@link HeapImpl}.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class WasmHeap extends Heap {
 
     private final WasmObjectHeader objectHeader = new WasmObjectHeader();
@@ -201,7 +206,7 @@ public class WasmHeap extends Heap {
 
         @Override
         public <T> void visitNativeImageHeapRegion(T region, MemoryWalker.NativeImageHeapRegionAccess<T> access) {
-            if (!access.isWritable(region) && !access.consistsOfHugeObjects(region)) {
+            if (!access.isWritable(region) && !access.usesUnalignedChunks(region)) {
                 access.visitObjects(region, this);
             }
         }
@@ -329,7 +334,7 @@ public class WasmHeap extends Heap {
     }
 
     @Override
-    public void optionValueChanged(RuntimeOptionKey<?> key) {
+    public void optionValueChanged(NotifyGCRuntimeOptionKey<?> key) {
         // Nothing to do
     }
 

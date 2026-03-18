@@ -26,6 +26,7 @@ package com.oracle.svm.core;
 
 import java.util.EnumSet;
 
+import com.oracle.svm.shared.Uninterruptible;
 import org.graalvm.nativeimage.ImageSingletons;
 
 import jdk.graal.compiler.api.replacements.Fold;

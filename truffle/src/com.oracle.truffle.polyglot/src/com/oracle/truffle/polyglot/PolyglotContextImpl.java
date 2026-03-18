@@ -554,6 +554,8 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
         this.volatileStatementCounter.set(statementLimit);
         this.threadLocalActions = new PolyglotThreadLocalActions(this);
 
+        maybeInitializeHostLanguage(contexts);
+
         PolyglotEngineImpl.ensureInstrumentsCreated(config.getConfiguredInstruments());
 
         /*
@@ -594,6 +596,7 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
         this.subProcesses = new HashSet<>();
         // notifyContextCreated() is called after spiContext.impl is set to this.
         this.engine.noInnerContexts.invalidate();
+        maybeInitializeHostLanguage(contexts);
     }
 
     void setContextAPIReference(Reference<Context> contextAPI) {
@@ -777,7 +780,6 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
             PolyglotLanguage language = languageIterator.next();
             newContexts[i] = new PolyglotLanguageContext(this, language);
         }
-        maybeInitializeHostLanguage(newContexts);
         return newContexts;
     }
 
@@ -2164,35 +2166,35 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
              */
             interruptingLock.lock();
             try {
-                validateInterruptPrecondition(this);
-                List<Future<Void>> futures;
-                synchronized (this) {
-                    if (state.isClosed()) {
-                        // already closed
-                        return true;
-                    }
-                    futures = new ArrayList<>(setInterrupting());
-                    if (!futures.isEmpty()) {
-                        childContextsToInterrupt = childContexts.toArray(new PolyglotContextImpl[childContexts.size()]);
-                    }
-                }
-
-                if (childContextsToInterrupt != null) {
-                    for (PolyglotContextImpl childCtx : childContextsToInterrupt) {
-                        futures.addAll(childCtx.interruptChildContexts());
-                    }
-                }
-
-                /*
-                 * No matter whether we successfully transitioned into one of the interrupting
-                 * states, we wait for threads to be completed (which is done as a part of the
-                 * cancel method) as the states that override interrupting states also lead to
-                 * threads being stopped. If that happens before the timeout, the interrupt is
-                 * successful.
-                 */
-                return PolyglotEngineImpl.cancelOrExitOrInterrupt(this, futures, startMillis, timeout);
-            } finally {
                 try {
+                    validateInterruptPrecondition(this);
+                    List<Future<Void>> futures;
+                    synchronized (this) {
+                        if (state.isClosed()) {
+                            // already closed
+                            return true;
+                        }
+                        futures = new ArrayList<>(setInterrupting());
+                        if (!futures.isEmpty()) {
+                            childContextsToInterrupt = childContexts.toArray(new PolyglotContextImpl[childContexts.size()]);
+                        }
+                    }
+
+                    if (childContextsToInterrupt != null) {
+                        for (PolyglotContextImpl childCtx : childContextsToInterrupt) {
+                            futures.addAll(childCtx.interruptChildContexts());
+                        }
+                    }
+
+                    /*
+                     * No matter whether we successfully transitioned into one of the interrupting
+                     * states, we wait for threads to be completed (which is done as a part of the
+                     * cancel method) as the states that override interrupting states also lead to
+                     * threads being stopped. If that happens before the timeout, the interrupt is
+                     * successful.
+                     */
+                    return PolyglotEngineImpl.cancelOrExitOrInterrupt(this, futures, startMillis, timeout);
+                } finally {
                     if (childContextsToInterrupt != null) {
                         PolyglotContextImpl[] childContextsToFinishInterrupt;
                         synchronized (this) {
@@ -2203,9 +2205,9 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
                             childCtx.finishInterruptForChildContexts();
                         }
                     }
-                } finally {
-                    interruptingLock.unlock();
                 }
+            } finally {
+                interruptingLock.unlock();
             }
         } catch (Throwable thr) {
             throw PolyglotImpl.guestToHostException(engine, thr);
@@ -2260,22 +2262,10 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
         return layer != null ? layer.engine : null;
     }
 
-    Object toGuestValue(Node node, Object hostValue, boolean asValue) {
-        PolyglotEngineImpl localEngine = getConstantEngine(node);
-        PolyglotContextImpl localContext;
-        if (localEngine == null) {
-            localEngine = this.engine;
-            localContext = this;
-        } else {
-            // lookup context as a constant
-            localContext = localEngine.singleContextValue.getConstant();
-            if (localContext == null) {
-                // not a constant use this
-                localContext = this;
-            }
-        }
-        Object value = PolyglotHostAccess.toGuestValue(localContext, hostValue);
-        return localEngine.host.toGuestValue(localContext.getHostContextImpl(), value, asValue);
+    static Object toGuestValue(Node node, Object hostValue, boolean asValue) {
+        PolyglotEngineImpl e = PolyglotFastThreadLocals.getEngine(node);
+        Object value = PolyglotHostAccess.toGuestValue(node, e.getAPIAccess(), hostValue);
+        return e.host.toGuestValue(node, value, asValue);
     }
 
     /**
@@ -3008,6 +2998,7 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
             synchronized (this) {
                 assert !state.isClosing();
                 closingThread = null;
+                // Parfait_ALLOW release-unacquired-lock
                 closingLock.unlock();
             }
         }
@@ -3078,6 +3069,21 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
                     PolyglotFastThreadLocals.cleanup(thread.fastThreadLocals);
                 }
                 localsCleared = true;
+                if (engine.inEnginePreInitialization) {
+                    /*
+                     * Remove references to the current thread from a closed inner context created
+                     * during context pre-initialization. Threads reachable from the image heap
+                     * cause native-image build failures, as build-time threads do not exist at
+                     * image runtime. Note: The top-level context remains active after
+                     * pre-initialization completes and its reference to the pre-initialization
+                     * thread is removed separately by leaveThreadChanged(prev, entered=true,
+                     * finalizeAndDispose=true) called from the preinitialize method.
+                     */
+                    PolyglotThreadInfo threadInfo = threads.get(Thread.currentThread());
+                    if (threadInfo != null) {
+                        finishThreadDispose(Thread.currentThread(), threadInfo, null);
+                    }
+                }
             }
         }
         Object defaultLoggers = EngineAccessor.LANGUAGE.getDefaultLoggers();
@@ -3892,6 +3898,21 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
                     context.leaveThreadChanged(prev, true, true);
                 }
             }
+            /*
+             * Inner contexts created during pre-initialization must be closed before the image heap
+             * is snapshotted. An unclosed context retains references to threads active during image
+             * build, which are invalid at image runtime and will cause native-image build failures.
+             */
+            synchronized (context) {
+                if (!context.childContexts.isEmpty()) {
+                    PolyglotContextImpl childContext = context.childContexts.get(0);
+                    throw new IllegalStateException(String.format(
+                                    "An inner context created during context pre-initialization was not closed before " +
+                                                    "pre-initialization completed. All inner contexts must be explicitly closed. " +
+                                                    "Unclosed context: %s",
+                                    childContext));
+                }
+            }
             return context;
         } finally {
             Reference.reachabilityFence(apiContext);
@@ -3963,7 +3984,7 @@ final class PolyglotContextImpl implements com.oracle.truffle.polyglot.PolyglotI
 
     private static boolean overridesPatchContext(String languageId) {
         if (TruffleOptions.AOT) {
-            return LanguageCache.overridesPathContext(languageId);
+            return LanguageCache.overridesPatchContext(languageId);
         } else {
             // Used by context pre-initialization tests on HotSpot
             LanguageCache cache = LanguageCache.languages().get(languageId);

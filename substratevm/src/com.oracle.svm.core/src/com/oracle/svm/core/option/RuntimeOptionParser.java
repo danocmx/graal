@@ -33,19 +33,19 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.common.option.CommonOptionParser.BooleanOptionFormat;
-import com.oracle.svm.common.option.CommonOptionParser.OptionParseResult;
 import com.oracle.svm.core.IsolateArgumentParser;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.graal.RuntimeCompilation;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.properties.RuntimeSystemPropertyParser;
-import com.oracle.svm.core.traits.BuiltinTraits.AllAccess;
-import com.oracle.svm.core.traits.BuiltinTraits.Duplicable;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.core.util.ImageHeapMap;
+import com.oracle.svm.shared.option.CommonOptionParser.BooleanOptionFormat;
+import com.oracle.svm.shared.option.CommonOptionParser.OptionParseResult;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.options.OptionDescriptor;
@@ -59,7 +59,7 @@ import jdk.graal.compiler.options.OptionValues;
  * There is no requirement to use this class, you can also implement your own option parsing and
  * then set the values of options manually.
  */
-@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class, other = Duplicable.class)
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public final class RuntimeOptionParser {
 
     /**
@@ -106,7 +106,7 @@ public final class RuntimeOptionParser {
     }
 
     /** All reachable options. */
-    public EconomicMap<String, OptionDescriptor> options = ImageHeapMap.create("options");
+    private final EconomicMap<String, OptionDescriptor> options = ImageHeapMap.createNonLayeredMap();
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public void addDescriptor(OptionDescriptor optionDescriptor) {

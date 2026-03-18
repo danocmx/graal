@@ -38,13 +38,17 @@ import com.oracle.objectfile.ObjectFile;
 import com.oracle.svm.core.SubstrateControlFlowIntegrity;
 import com.oracle.svm.core.aarch64.SubstrateAArch64MacroAssembler;
 import com.oracle.svm.core.config.ConfigurationValues;
-import com.oracle.svm.core.graal.aarch64.AArch64InterpreterStubs;
+import com.oracle.svm.core.graal.aarch64.SubstrateAArch64Backend;
 import com.oracle.svm.core.graal.aarch64.SubstrateAArch64RegisterConfig;
 import com.oracle.svm.core.graal.meta.SubstrateRegisterConfig;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.image.NativeImage;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.interpreter.metadata.InterpreterResolvedJavaMethod;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.asm.Assembler;
 import jdk.graal.compiler.asm.Label;
@@ -52,6 +56,7 @@ import jdk.graal.compiler.asm.aarch64.AArch64MacroAssembler;
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.vm.ci.code.Register;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class AArch64InterpreterStubSection extends InterpreterStubSection {
     public AArch64InterpreterStubSection() {
         this.target = ConfigurationValues.getTarget();
@@ -89,7 +94,7 @@ public class AArch64InterpreterStubSection extends InterpreterStubSection {
             recordEnterTrampoline(method, masm.position());
 
             /* pass the method index, the reference is obtained in enterInterpreterStub */
-            masm.mov(AArch64InterpreterStubs.TRAMPOLINE_ARGUMENT, method.getEnterStubOffset());
+            masm.mov(SubstrateAArch64Backend.HIDDEN_ARGUMENT_REGISTER, method.getEnterStubOffset());
 
             masm.jmp(interpEnterStub);
         }
@@ -132,7 +137,7 @@ public class AArch64InterpreterStubSection extends InterpreterStubSection {
             int expectedStubEnd = masm.position() + getVTableStubSize();
 
             /* pass current vTable index as hidden argument */
-            masm.mov(AArch64InterpreterStubs.TRAMPOLINE_ARGUMENT, vTableIndex);
+            masm.mov(SubstrateAArch64Backend.HIDDEN_ARGUMENT_REGISTER, vTableIndex);
 
             masm.jmp(interpEnterStub);
 

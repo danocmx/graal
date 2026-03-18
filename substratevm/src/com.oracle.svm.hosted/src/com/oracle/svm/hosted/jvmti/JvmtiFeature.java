@@ -24,7 +24,6 @@
  */
 package com.oracle.svm.hosted.jvmti;
 
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CEntryPoint;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
@@ -43,9 +42,7 @@ import com.oracle.svm.core.jvmti.JvmtiFunctions;
 import com.oracle.svm.core.jvmti.JvmtiSupport;
 import com.oracle.svm.core.jvmti.headers.JvmtiInterface;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeCompilationAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.CompilationAccessImpl;
@@ -57,8 +54,14 @@ import com.oracle.svm.hosted.code.CEntryPointCallStubSupport;
 import com.oracle.svm.hosted.code.CEntryPointData;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedType;
+import com.oracle.svm.shared.option.SubstrateOptionsParser;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
-import com.oracle.svm.util.ReflectionUtil;
 
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -69,6 +72,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
  * <a href="https://docs.oracle.com/en/java/javase/22/docs/specs/jvmti.html">specification</a>.
  */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class JvmtiFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -99,7 +103,7 @@ public class JvmtiFeature implements InternalFeature {
         /* Manually add the CEntryPoints, so that this is only done when JVMTI is enabled. */
         AnalysisType type = metaAccess.lookupJavaType(JvmtiFunctions.class);
         for (AnalysisMethod method : type.getDeclaredMethods(false)) {
-            VMError.guarantee(AnnotationAccess.getAnnotation(method, CEntryPoint.class) != null, "Method %s does not have a @CEntryPoint annotation.", method.format("%H.%n(%p)"));
+            VMError.guarantee(AnnotationUtil.getAnnotation(method, CEntryPoint.class) != null, "Method %s does not have a @CEntryPoint annotation.", method.format("%H.%n(%p)"));
             CEntryPointCallStubSupport.singleton().registerStubForMethod(method, () -> CEntryPointData.create(method));
         }
     }

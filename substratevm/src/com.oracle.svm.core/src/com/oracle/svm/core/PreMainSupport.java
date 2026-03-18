@@ -46,8 +46,14 @@ import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.jdk.ModuleNative;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ModuleSupport;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.StringUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.HostedModuleSupport;
 
 /**
  * Java agents can do initialization work before the main method is invoked. This class supports
@@ -80,6 +86,7 @@ import com.oracle.svm.util.ModuleSupport;
  * As a last resort, it is also possible to substitute a premain method with a native image-specific
  * version.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class, other = Disallowed.class)
 public class PreMainSupport {
 
     private static final String PREMAIN_OPTION_PREFIX = "-XXpremain:";
@@ -124,7 +131,7 @@ public class PreMainSupport {
         for (String arg : args) {
             if (arg.startsWith(PREMAIN_OPTION_PREFIX)) {
                 String premainOptionKeyValue = arg.substring(PREMAIN_OPTION_PREFIX.length());
-                String[] pair = SubstrateUtil.split(premainOptionKeyValue, ":");
+                String[] pair = StringUtil.split(premainOptionKeyValue, ":");
                 if (pair.length == 2) {
                     premainOptions.put(pair[0], pair[1]);
                 }
@@ -211,7 +218,7 @@ public class PreMainSupport {
         }
 
         private static boolean isSystemClass(Module module) {
-            return ModuleSupport.SYSTEM_MODULES.contains(module.getName());
+            return HostedModuleSupport.SYSTEM_MODULES.contains(module.getName());
         }
 
         @Override

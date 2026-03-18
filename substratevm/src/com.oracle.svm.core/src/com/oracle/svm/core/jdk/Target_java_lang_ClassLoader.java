@@ -37,7 +37,7 @@ import java.util.stream.Stream;
 
 import org.graalvm.nativeimage.hosted.FieldValueTransformer;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.Inject;
@@ -52,9 +52,9 @@ import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.hub.RuntimeClassLoading.ClassDefinitionInfo;
 import com.oracle.svm.core.hub.registry.AbstractClassRegistry;
 import com.oracle.svm.core.hub.registry.ClassRegistries;
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.graal.compiler.java.LambdaUtils;
 import jdk.graal.compiler.util.Digest;
@@ -103,17 +103,22 @@ public final class Target_java_lang_ClassLoader {
     @Alias @RecomputeFieldValue(kind = Kind.Custom, declClass = AssertionLockComputer.class, isFinal = true) // GR-62338
     private Object assertionLock;
 
-    @Alias //
-    private static ClassLoader scl;
+    @Delete private static ClassLoader scl;
 
     @Inject @RecomputeFieldValue(kind = Kind.Custom, declClass = ClassRegistries.ClassRegistryComputer.class)//
     @TargetElement(onlyWith = ClassForNameSupport.RespectsClassLoader.class)//
     public volatile AbstractClassRegistry classRegistry;
 
+    @Alias
+    static native ClassLoader getBuiltinAppClassLoader();
+
     @Substitute
     public static ClassLoader getSystemClassLoader() {
-        VMError.guarantee(scl != null);
-        return scl;
+        /*
+         * Setting custom SystemClassLoader via java.system.class.loader system property currently
+         * not supported for native-images.
+         */
+        return getBuiltinAppClassLoader();
     }
 
     @Delete
@@ -123,6 +128,7 @@ public final class Target_java_lang_ClassLoader {
     public native Enumeration<URL> findResources(String name);
 
     @Substitute
+    @TargetElement(onlyWith = ClassForNameSupport.IgnoresClassLoader.class)
     private Enumeration<URL> getResources(String name) {
         /* Every class loader sees every resource, so we still need this substitution (GR-19998). */
         Enumeration<URL> urls = ResourcesHelper.nameToResourceEnumerationURLs(name);

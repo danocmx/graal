@@ -30,8 +30,9 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.LogHandler;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.c.CIsolateData;
 import com.oracle.svm.core.c.CIsolateDataFactory;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
@@ -46,10 +47,14 @@ import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
 import com.oracle.svm.core.windows.headers.Process;
 import com.oracle.svm.core.windows.headers.SynchAPI;
 import com.oracle.svm.core.windows.headers.WinBase;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 @AutomaticallyRegisteredImageSingleton(VMLockSupport.class)
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public final class WindowsVMLockSupport extends VMLockSupport {
 
     @Override
@@ -61,7 +66,7 @@ public final class WindowsVMLockSupport extends VMLockSupport {
     @Override
     @Platforms(Platform.HOSTED_ONLY.class)
     protected VMCondition replaceVMCondition(VMCondition source) {
-        return new WindowsVMCondition((WindowsVMMutex) mutexReplacer.apply(source.getMutex()));
+        return new WindowsVMCondition((WindowsVMMutex) mutexReplacer.apply(source.getMutex()), source.getName());
     }
 
     @Override
@@ -77,7 +82,8 @@ public final class WindowsVMLockSupport extends VMLockSupport {
         }
     }
 
-    @Uninterruptible(reason = "Error handling is interruptible.", calleeMustBe = false)
+    @NeverInline("Fatal error handling is always a slowpath.")
+    @Uninterruptible(reason = "Parts of the error handling are interruptible.", calleeMustBe = false)
     @RestrictHeapAccess(access = NO_ALLOCATION, reason = "Must not allocate in fatal error handling.")
     static void fatalError(String functionName) {
         /*
@@ -100,7 +106,7 @@ final class WindowsVMMutex extends VMMutex {
     @Platforms(Platform.HOSTED_ONLY.class)
     WindowsVMMutex(String name) {
         super(name);
-        structPointer = CIsolateDataFactory.createStruct("windowsMutex_" + name, Process.CRITICAL_SECTION.class);
+        structPointer = CIsolateDataFactory.createStruct("mutex_" + name, Process.CRITICAL_SECTION.class);
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
@@ -166,9 +172,9 @@ final class WindowsVMCondition extends VMCondition {
     private final CIsolateData<Process.CONDITION_VARIABLE> structPointer;
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    WindowsVMCondition(WindowsVMMutex mutex) {
-        super(mutex);
-        structPointer = CIsolateDataFactory.createStruct("windowsCondition_" + mutex.getName(), Process.CONDITION_VARIABLE.class);
+    WindowsVMCondition(WindowsVMMutex mutex, String name) {
+        super(mutex, name);
+        structPointer = CIsolateDataFactory.createStruct("condition_" + name, Process.CONDITION_VARIABLE.class);
     }
 
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)

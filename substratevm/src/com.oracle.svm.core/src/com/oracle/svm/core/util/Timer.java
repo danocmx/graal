@@ -24,9 +24,9 @@
  */
 package com.oracle.svm.core.util;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.Uninterruptible;
 
 /**
  * An uninterruptible nanosecond-precision timer that can be started repeatedly.

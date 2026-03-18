@@ -26,7 +26,7 @@ package com.oracle.svm.hosted.annotation;
 
 import java.util.List;
 
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotatedWrapper;
 import com.oracle.svm.util.OriginalClassProvider;
 
@@ -143,12 +143,6 @@ public abstract class CustomSubstitutionType implements ResolvedJavaType, Origin
     @Override
     public boolean isAssignableFrom(ResolvedJavaType other) {
         return original.isAssignableFrom(other);
-    }
-
-    @SuppressWarnings("deprecation")
-    @Override
-    public ResolvedJavaType getHostClass() {
-        return original.getHostClass();
     }
 
     @Override

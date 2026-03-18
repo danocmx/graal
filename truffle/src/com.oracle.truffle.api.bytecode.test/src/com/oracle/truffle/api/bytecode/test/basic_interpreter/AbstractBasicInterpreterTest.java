@@ -111,14 +111,16 @@ public abstract class AbstractBasicInterpreterTest {
             return interpreterClass() == BasicInterpreterWithBE.class ||
                             interpreterClass() == BasicInterpreterWithStoreBytecodeIndexInFrame.class ||
                             interpreterClass() == BasicInterpreterProductionBlockScoping.class ||
-                            interpreterClass() == BasicInterpreterProductionRootScoping.class;
+                            interpreterClass() == BasicInterpreterProductionRootScoping.class ||
+                            interpreterClass() == BasicInterpreterProductionRootScopingTailCall.class;
         }
 
         public boolean hasUncachedInterpreter() {
             return interpreterClass() == BasicInterpreterWithUncached.class ||
                             interpreterClass() == BasicInterpreterWithStoreBytecodeIndexInFrame.class ||
                             interpreterClass() == BasicInterpreterProductionBlockScoping.class ||
-                            interpreterClass() == BasicInterpreterProductionRootScoping.class;
+                            interpreterClass() == BasicInterpreterProductionRootScoping.class ||
+                            interpreterClass() == BasicInterpreterProductionRootScopingTailCall.class;
         }
 
         @SuppressWarnings("static-method")
@@ -128,11 +130,16 @@ public abstract class AbstractBasicInterpreterTest {
 
         public boolean hasRootScoping() {
             return interpreterClass() == BasicInterpreterWithRootScoping.class ||
-                            interpreterClass() == BasicInterpreterProductionRootScoping.class;
+                            interpreterClass() == BasicInterpreterProductionRootScoping.class ||
+                            interpreterClass() == BasicInterpreterProductionRootScopingTailCall.class;
         }
 
         public boolean hasBlockScoping() {
             return !hasRootScoping();
+        }
+
+        public boolean hasInstructionRewriting() {
+            return interpreterClass() != BasicInterpreterBase.class;
         }
 
         public boolean storesBciInFrame() {
@@ -167,7 +174,8 @@ public abstract class AbstractBasicInterpreterTest {
                 return 8;
             } else if (interpreterClass() == BasicInterpreterWithUncached.class //
                             || interpreterClass() == BasicInterpreterWithRootScoping.class //
-                            || interpreterClass() == BasicInterpreterProductionRootScoping.class) {
+                            || interpreterClass() == BasicInterpreterProductionRootScoping.class //
+                            || interpreterClass() == BasicInterpreterProductionRootScopingTailCall.class) {
                 return 16;
             }
 
@@ -221,7 +229,10 @@ public abstract class AbstractBasicInterpreterTest {
                 buffer.writeByte(5);
                 buffer.writeUTF(source.getLanguage());
                 buffer.writeUTF(source.getName());
-                buffer.writeUTF(source.getCharacters().toString());
+                buffer.writeBoolean(source.hasCharacters());
+                if (source.hasCharacters()) {
+                    buffer.writeUTF(source.getCharacters().toString());
+                }
             } else {
                 throw new AssertionError("Serializer does not handle object " + object);
             }
@@ -253,8 +264,10 @@ public abstract class AbstractBasicInterpreterTest {
                 case 5 -> {
                     String language = buffer.readUTF();
                     String name = buffer.readUTF();
-                    String characters = buffer.readUTF();
-                    yield Source.newBuilder(language, characters, name).build();
+                    boolean hasCharacters = buffer.readBoolean();
+                    CharSequence characters = hasCharacters ? buffer.readUTF() : "";
+                    CharSequence content = hasCharacters ? characters : Source.CONTENT_NONE;
+                    yield Source.newBuilder(language, characters, name).content(content).build();
                 }
                 default -> throw new AssertionError("Deserializer does not handle code " + objectCode);
             };
@@ -563,7 +576,7 @@ public abstract class AbstractBasicInterpreterTest {
         } catch (IOException ex) {
             throw new AssertionError(ex);
         }
-        Supplier<DataInput> input = () -> SerializationUtils.createDataInput(ByteBuffer.wrap(output.toByteArray()));
+        Supplier<DataInput> input = () -> SerializationUtils.createByteBufferDataInput(ByteBuffer.wrap(output.toByteArray()));
         try {
             return run.bytecode().deserialize(language, config, input, DESERIALIZER);
         } catch (IOException e) {
@@ -692,6 +705,19 @@ public abstract class AbstractBasicInterpreterTest {
     @SuppressWarnings("unchecked")
     public static List<BytecodeVariant> allVariants() {
         return BasicInterpreterBuilder.variants();
+    }
+
+    public static boolean hasRootScoping(Class<? extends BasicInterpreter> interpreterClass) {
+        return interpreterClass == BasicInterpreterWithRootScoping.class ||
+                        interpreterClass == BasicInterpreterProductionRootScoping.class || interpreterClass == BasicInterpreterProductionRootScopingTailCall.class;
+    }
+
+    public static Object getDefaultLocalValue(Class<? extends BasicInterpreter> interpreterClass) {
+        if (interpreterClass == BasicInterpreterWithOptimizations.class || interpreterClass == BasicInterpreterWithRootScoping.class ||
+                        interpreterClass == BasicInterpreterProductionRootScopingTailCall.class) {
+            return BasicInterpreter.LOCAL_DEFAULT_VALUE;
+        }
+        return null;
     }
 
     /// Code gen helpers

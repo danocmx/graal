@@ -35,8 +35,9 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.MemoryWalker;
 import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.SubstrateDiagnostics;
@@ -45,8 +46,6 @@ import com.oracle.svm.core.SubstrateDiagnostics.DiagnosticThunkRegistry;
 import com.oracle.svm.core.SubstrateDiagnostics.ErrorContext;
 import com.oracle.svm.core.SubstrateGCOptions;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.genscavenge.AlignedHeapChunk.AlignedHeader;
@@ -69,13 +68,13 @@ import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.jfr.JfrTicks;
 import com.oracle.svm.core.jfr.events.SystemGCEvent;
-import com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton;
 import com.oracle.svm.core.locks.VMCondition;
 import com.oracle.svm.core.locks.VMMutex;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.metaspace.Metaspace;
 import com.oracle.svm.core.nodes.CFunctionEpilogueNode;
 import com.oracle.svm.core.nodes.CFunctionPrologueNode;
+import com.oracle.svm.core.option.NotifyGCRuntimeOptionKey;
 import com.oracle.svm.core.option.RuntimeOptionKey;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 import com.oracle.svm.core.thread.PlatformThreads;
@@ -85,18 +84,25 @@ import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.thread.VMThreads.SafepointBehavior;
 import com.oracle.svm.core.util.UnsignedUtils;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.Duplicable;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.SubstrateUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.api.replacements.Fold;
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
 import jdk.graal.compiler.nodes.extended.MembarNode;
-import jdk.graal.compiler.word.Word;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Duplicable.class)
 public final class HeapImpl extends Heap {
     /** Synchronization means for notifying {@link #refPendingList} waiters without deadlocks. */
     private static final VMMutex REF_MUTEX = new VMMutex("referencePendingList");
-    private static final VMCondition REF_CONDITION = new VMCondition(REF_MUTEX);
+    private static final VMCondition REF_CONDITION = new VMCondition(REF_MUTEX, "referencePendingList");
 
     // Singleton instances, created during image generation.
     private final YoungGeneration youngGeneration = new YoungGeneration("YoungGeneration");
@@ -211,7 +217,8 @@ public final class HeapImpl extends Heap {
     public boolean tearDown() {
         youngGeneration.tearDown();
         oldGeneration.tearDown();
-        getChunkProvider().tearDown();
+        chunkProvider.tearDown();
+        gcImpl.tearDown();
 
         if (Metaspace.isSupported()) {
             MetaspaceImpl.singleton().tearDown();
@@ -385,7 +392,7 @@ public final class HeapImpl extends Heap {
 
         @Override
         public <T> void visitNativeImageHeapRegion(T region, MemoryWalker.NativeImageHeapRegionAccess<T> access) {
-            if (!access.isWritable(region) && !access.consistsOfHugeObjects(region)) {
+            if (!access.isWritable(region) && !access.usesUnalignedChunks(region)) {
                 access.visitObjects(region, this);
             }
         }
@@ -431,7 +438,7 @@ public final class HeapImpl extends Heap {
     }
 
     @Override
-    @Uninterruptible(reason = "Thread is detaching and holds the THREAD_MUTEX.")
+    @Uninterruptible(reason = "Current thread holds the ThreadsLock with exclusive write access.")
     public void detachThread(IsolateThread isolateThread) {
         TlabSupport.disableAndFlushForThread(isolateThread);
     }
@@ -701,10 +708,22 @@ public final class HeapImpl extends Heap {
     }
 
     @Override
-    public void optionValueChanged(RuntimeOptionKey<?> key) {
-        if (!SubstrateUtil.HOSTED) {
-            GCImpl.getPolicy().updateSizeParameters();
+    public void optionValueChanged(NotifyGCRuntimeOptionKey<?> key) {
+        if (SubstrateUtil.HOSTED || isIrrelevantForGCPolicy(key)) {
+            return;
         }
+
+        GCImpl.getPolicy().updateSizeParameters();
+    }
+
+    /** For the GC policy, mainly heap-size-related GC options are relevant. */
+    private static boolean isIrrelevantForGCPolicy(RuntimeOptionKey<?> key) {
+        return key == SubstrateGCOptions.DisableExplicitGC ||
+                        key == SubstrateGCOptions.PrintGC ||
+                        key == SubstrateGCOptions.VerboseGC ||
+                        key == SubstrateGCOptions.ConcealedOptions.VerifyBeforeGC ||
+                        key == SubstrateGCOptions.ConcealedOptions.VerifyDuringGC ||
+                        key == SubstrateGCOptions.ConcealedOptions.VerifyAfterGC;
     }
 
     @Override
@@ -758,30 +777,31 @@ public final class HeapImpl extends Heap {
     }
 
     @Override
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "Necessary to return a reasonably consistent value (a GC can change the queried values).")
     public UnsignedWord getUsedMemoryAfterLastGC() {
         return accounting.getUsedBytes();
     }
 
     private boolean printLocationInfo(Log log, Pointer ptr, boolean allowJavaHeapAccess, boolean allowUnsafeOperations) {
-        for (ImageHeapInfo info : HeapImpl.getImageHeapInfos()) {
-            if (info.isInReadOnlyRegularPartition(ptr)) {
-                log.string("points into the image heap (read-only)");
+        for (ImageHeapInfo imageHeap : HeapImpl.getImageHeapInfos()) {
+            /* Check from most-specific to least-specific. */
+            if (imageHeap.isInAlignedReadOnlyRelocatable(ptr)) {
+                log.string("points into the image heap (aligned chunk, read-only relocatables)");
                 return true;
-            } else if (info.isInReadOnlyRelocatablePartition(ptr)) {
-                log.string("points into the image heap (read-only relocatables)");
+            } else if (imageHeap.isInAlignedReadOnly(ptr)) {
+                log.string("points into the image heap (aligned chunk, read-only)");
                 return true;
-            } else if (info.isInWritablePatchedPartition(ptr)) {
-                log.string("points into the image heap (writable patched)");
+            } else if (imageHeap.isInAlignedWritablePatched(ptr)) {
+                log.string("points into the image heap (aligned chunk, writable patched)");
                 return true;
-            } else if (info.isInWritableRegularPartition(ptr)) {
-                log.string("points into the image heap (writable)");
+            } else if (imageHeap.isInAlignedWritable(ptr)) {
+                log.string("points into the image heap (aligned chunk, writable)");
                 return true;
-            } else if (info.isInWritableHugePartition(ptr)) {
-                log.string("points into the image heap (writable huge)");
+            } else if (imageHeap.isInUnalignedWritable(ptr)) {
+                log.string("points into the image heap (unaligned chunk, writable)");
                 return true;
-            } else if (info.isInReadOnlyHugePartition(ptr)) {
-                log.string("points into the image heap (read-only huge)");
+            } else if (imageHeap.isInUnalignedReadOnly(ptr)) {
+                log.string("points into the image heap (unaligned chunk, read-only)");
                 return true;
             }
         }
@@ -933,7 +953,7 @@ public final class HeapImpl extends Heap {
         @Override
         @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate while printing diagnostics.")
         public void printDiagnostics(Log log, ErrorContext context, int maxDiagnosticLevel, int invocationCount) {
-            log.string("Image heap boundaries:").indent(true);
+            log.string("Image heap:").indent(true);
             for (ImageHeapInfo info : HeapImpl.getImageHeapInfos()) {
                 info.print(log);
             }
@@ -942,7 +962,7 @@ public final class HeapImpl extends Heap {
             if (AuxiliaryImageHeap.isPresent()) {
                 ImageHeapInfo auxHeapInfo = AuxiliaryImageHeap.singleton().getImageHeapInfo();
                 if (auxHeapInfo != null) {
-                    log.string("Auxiliary image heap boundaries:").indent(true);
+                    log.string("Auxiliary image heap:").indent(true);
                     auxHeapInfo.print(log);
                     log.indent(false);
                 }
@@ -1007,7 +1027,7 @@ final class Target_java_lang_Runtime {
 
     @Substitute
     private long maxMemory() {
-        GCImpl.getPolicy().updateSizeParameters();
+        GCImpl.getPolicy().ensureSizeParametersInitialized();
         return GCImpl.getPolicy().getMaximumHeapSize().rawValue();
     }
 

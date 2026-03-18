@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2023, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,7 +33,6 @@ import org.graalvm.nativeimage.c.function.CFunction;
 import com.oracle.graal.pointsto.infrastructure.ResolvedSignature;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.HostedProviders;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.foreign.AbiUtils;
 import com.oracle.svm.core.foreign.DowncallStubsHolder;
 import com.oracle.svm.core.foreign.ForeignFunctionsRuntime;
@@ -43,10 +42,11 @@ import com.oracle.svm.core.graal.code.AssignedLocation;
 import com.oracle.svm.core.graal.code.SubstrateCallingConventionType;
 import com.oracle.svm.core.graal.snippets.CFunctionSnippets;
 import com.oracle.svm.core.thread.VMThreads;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 import com.oracle.svm.hosted.code.NonBytecodeMethod;
 import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.util.GuestAccess;
 
 import jdk.graal.compiler.annotation.AnnotationValue;
 import jdk.graal.compiler.core.common.spi.ForeignCallDescriptor;
@@ -106,7 +106,7 @@ class DowncallStub extends NonBytecodeMethod {
     }
 
     private static final List<AnnotationValue> INJECTED_ANNOTATIONS_FOR_ALLOW_HEAP_ACCESS = List.of(
-                    newAnnotationValue(Uninterruptible.class,
+                    newAnnotationValue(GuestAccess.elements().Uninterruptible,
                                     "reason", "See DowncallStub.getInjectedAnnotations.",
                                     "calleeMustBe", false));
 
@@ -130,6 +130,8 @@ class DowncallStub extends NonBytecodeMethod {
      */
     @Override
     public StructuredGraph buildGraph(DebugContext debug, AnalysisMethod method, HostedProviders providers, Purpose purpose) {
+        AbiUtils abiUtils = AbiUtils.singleton();
+
         ForeignGraphKit kit = new ForeignGraphKit(debug, providers, method);
         FrameStateBuilder state = kit.getFrameState();
         boolean deoptimizationTarget = SubstrateCompilationDirectives.isDeoptTarget(method);
@@ -140,7 +142,7 @@ class DowncallStub extends NonBytecodeMethod {
         arguments = argumentsAndNep.getLeft();
         ValueNode runtimeNep = argumentsAndNep.getRight();
 
-        AbiUtils.Adapter.Result.FullNativeAdaptation adapted = AbiUtils.singleton().adapt(kit.unboxArguments(arguments, this.nep.methodType()), this.nep);
+        AbiUtils.Adapter.Result.FullNativeAdaptation adapted = abiUtils.adapt(kit.unboxArguments(arguments, this.nep.methodType()), this.nep);
         for (var node : adapted.nodesToAppendToGraph()) {
             kit.append(node);
         }
@@ -157,8 +159,8 @@ class DowncallStub extends NonBytecodeMethod {
         }
 
         state.clearLocals();
-        SubstrateCallingConventionType cc = SubstrateCallingConventionType.makeCustom(true, adapted.parametersAssignment().toArray(new AssignedLocation[0]),
-                        adapted.returnsAssignment().toArray(new AssignedLocation[0]));
+        SubstrateCallingConventionType cc = SubstrateCallingConventionType.makeCustom(true, adapted.parametersAssignment().toArray(AssignedLocation.EMPTY_ARRAY),
+                        adapted.returnsAssignment().toArray(AssignedLocation.EMPTY_ARRAY));
 
         CFunction.Transition transition = nep.skipsTransition() ? CFunction.Transition.NO_TRANSITION : CFunction.Transition.TO_NATIVE;
 

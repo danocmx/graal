@@ -30,17 +30,40 @@ import org.graalvm.nativeimage.hosted.RuntimeReflection;
 
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.util.GuestAccess;
+import com.oracle.svm.util.JVMCIReflectionUtil;
+import com.oracle.svm.util.OriginalMethodProvider;
 
+import jdk.vm.ci.meta.ResolvedJavaType;
 import sun.util.calendar.JulianCalendar;
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class CalendarFeature implements InternalFeature {
+
     @Override
     public void beforeAnalysis(BeforeAnalysisAccess access) {
+        initializeCalendarSystem(((InternalFeatureAccess) access));
         // GregorianCalendar might use JulianCalendar via reflection
         access.registerReachabilityHandler(_ -> {
             RuntimeReflection.register(JulianCalendar.class);
             RuntimeReflection.registerForReflectiveInstantiation(JulianCalendar.class);
         }, GregorianCalendar.class);
+    }
+
+    /**
+     * Make sure {@code CalendarSystem} is initialized before analysis. Otherwise, the reachability
+     * of its {@code initName} method is non-deterministic, because there is a race condition
+     * between heap snapshotting and the first call to the {@code forName} method, which triggers
+     * the initialization.
+     */
+    private static void initializeCalendarSystem(InternalFeatureAccess access) {
+        ResolvedJavaType calendarSystem = access.findTypeByName("sun.util.calendar.CalendarSystem");
+        var forName = JVMCIReflectionUtil.getUniqueDeclaredMethod(access.getMetaAccess(), calendarSystem, "forName", String.class);
+        GuestAccess guestAccess = GuestAccess.get();
+        guestAccess.invoke(OriginalMethodProvider.getOriginalMethod(forName), null, guestAccess.getSnippetReflection().forObject("julian"));
     }
 }

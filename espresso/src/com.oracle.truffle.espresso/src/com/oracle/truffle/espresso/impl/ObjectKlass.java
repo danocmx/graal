@@ -25,7 +25,6 @@ package com.oracle.truffle.espresso.impl;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_FINALIZER;
 import static com.oracle.truffle.espresso.classfile.Constants.ACC_SUPER;
 import static com.oracle.truffle.espresso.classfile.Constants.JVM_ACC_WRITTEN_FLAGS;
-import static com.oracle.truffle.espresso.classfile.ParserKlass.isSignaturePolymorphicHolderType;
 
 import java.io.PrintStream;
 import java.lang.ref.WeakReference;
@@ -76,6 +75,7 @@ import com.oracle.truffle.espresso.classfile.attributes.SourceDebugExtensionAttr
 import com.oracle.truffle.espresso.classfile.attributes.SourceFileAttribute;
 import com.oracle.truffle.espresso.classfile.bytecode.BytecodeStream;
 import com.oracle.truffle.espresso.classfile.bytecode.Bytecodes;
+import com.oracle.truffle.espresso.classfile.descriptors.Descriptor;
 import com.oracle.truffle.espresso.classfile.descriptors.Name;
 import com.oracle.truffle.espresso.classfile.descriptors.Signature;
 import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
@@ -83,7 +83,6 @@ import com.oracle.truffle.espresso.classfile.descriptors.Type;
 import com.oracle.truffle.espresso.classfile.descriptors.TypeSymbols;
 import com.oracle.truffle.espresso.constantpool.RuntimeConstantPool;
 import com.oracle.truffle.espresso.descriptors.EspressoSymbols.Names;
-import com.oracle.truffle.espresso.descriptors.EspressoSymbols.Types;
 import com.oracle.truffle.espresso.impl.ModuleTable.ModuleEntry;
 import com.oracle.truffle.espresso.impl.PackageTable.PackageEntry;
 import com.oracle.truffle.espresso.meta.EspressoError;
@@ -225,10 +224,10 @@ public final class ObjectKlass extends Klass implements AttributedElement {
         if (info.protectionDomain != null && !StaticObject.isNull(info.protectionDomain)) {
             // Protection domain should not be host null, and will be initialized to guest null on
             // mirror creation.
-            getMeta().HIDDEN_PROTECTION_DOMAIN.setMaybeHiddenObject(initializeEspressoClass(), info.protectionDomain);
+            getMeta().java_lang_Class_0protectedDomain.setMaybeHiddenObject(initializeGuestClassMirror(), info.protectionDomain);
         }
         if (info.classData != null) {
-            getMeta().java_lang_Class_classData.setObject(initializeEspressoClass(), info.classData);
+            getMeta().java_lang_Class_classData.setObject(initializeGuestClassMirror(), info.classData);
         }
         if (!info.addedToRegistry()) {
             initSelfReferenceInPool();
@@ -238,7 +237,7 @@ public final class ObjectKlass extends Klass implements AttributedElement {
         getContext().getClassHierarchyOracle().registerNewKlassVersion(klassVersion);
         this.initState = LOADED;
         if (getMeta().java_lang_Class != null) {
-            initializeEspressoClass();
+            initializeGuestClassMirror();
         }
     }
 
@@ -735,19 +734,135 @@ public final class ObjectKlass extends Klass implements AttributedElement {
         return getKlassVersion().pool;
     }
 
-    @Override
-    public boolean isLocal() {
-        return false;
+    /**
+     * Returns the binary name of this class without the leading enclosing class name. Returns null
+     * if this class is a top level class.
+     */
+    @SuppressWarnings("unchecked")
+    @TruffleBoundary
+    public Symbol<Name> getSimpleBinaryName() {
+        RuntimeConstantPool pool = getConstantPool();
+        InnerClassesAttribute inner = getInnerClasses();
+        if (inner == null) {
+            return null;
+        }
+        for (int i = 0; i < inner.entryCount(); i++) {
+            InnerClassesAttribute.Entry entry = inner.entryAt(i);
+            int innerClassIndex = entry.innerClassIndex;
+            if (innerClassIndex != 0) {
+                if (pool.className(innerClassIndex) == getName() && pool.resolvedKlassAt(this, innerClassIndex) == this) {
+                    if (entry.innerNameIndex == 0) {
+                        break;
+                    } else {
+                        return (Symbol<Name>) pool.utf8At(entry.innerNameIndex, "inner class name");
+                    }
+                }
+            }
+        }
+        return null;
     }
 
-    @Override
-    public boolean isMember() {
-        return false;
+    /**
+     * Returns the class in which this class is declared.
+     *
+     * @return null if {@code klass} is a top level class or anonymous (i.e. declared inside a
+     *         method or constructor)
+     * @see Class#getDeclaringClass()
+     */
+    @TruffleBoundary
+    public Klass getDeclaringClass() {
+        InnerClassesAttribute innerClasses = getAttribute(InnerClassesAttribute.NAME, InnerClassesAttribute.class);
+        if (innerClasses == null) {
+            return null;
+        }
+        RuntimeConstantPool pool = getConstantPool();
+        for (int i = 0; i < innerClasses.entryCount(); i++) {
+            InnerClassesAttribute.Entry entry = innerClasses.entryAt(i);
+            if (entry.innerClassIndex != 0) {
+                Symbol<Name> innerDescriptor = pool.className(entry.innerClassIndex);
+                // Check descriptors/names before resolving.
+                if (innerDescriptor.equals(getName())) {
+                    Klass innerKlass = pool.resolvedKlassAt(this, entry.innerClassIndex);
+                    if (innerKlass == this) {
+                        if (entry.outerClassIndex != 0) {
+                            Klass outerKlass = pool.resolvedKlassAt(this, entry.outerClassIndex);
+                            if (!(outerKlass instanceof ObjectKlass)) {
+                                // If the outer class is not an instance klass then it cannot have
+                                // declared any inner classes.
+                                Meta meta = outerKlass.getMeta();
+                                throw meta.throwExceptionWithMessage(meta.java_lang_IncompatibleClassChangeError,
+                                                "%s and %s disagree on InnerClasses attribute", getName(), outerKlass.getName());
+                            }
+                            checkOuterAndInnerClassAgree(outerKlass, this);
+                            return outerKlass;
+                        } else {
+                            return null;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Checks that {@code outerKlass} has declared {@code innerKlass} as an inner klass.
+     *
+     * @throws IncompatibleClassChangeError if the check fails
+     */
+    @SuppressWarnings("unused")
+    private void checkOuterAndInnerClassAgree(Klass outerKlass, Klass innerKlass) {
+        // TODO: GR-72144
+    }
+
+    public record EnclosingMethodInfo(
+                    Klass enclosingClass,
+                    Symbol<Name> name,
+                    Symbol<? extends Descriptor> descriptor) {
+        public boolean isPartial() {
+            return name == null || descriptor == null;
+        }
+
+        boolean isConstructor() {
+            return !isPartial() && name == Names._init_;
+        }
+
+        boolean isMethod() {
+            return !isPartial() && !isConstructor() && name != Names._clinit_;
+        }
+    }
+
+    @TruffleBoundary
+    public EnclosingMethodInfo getEnclosingMethodInfo() {
+        EnclosingMethodAttribute enclosingMethodAttr = getEnclosingMethod();
+        if (enclosingMethodAttr == null) {
+            return null;
+        }
+        int classIndex = enclosingMethodAttr.getClassIndex();
+        if (classIndex == 0) {
+            return null;
+        }
+        RuntimeConstantPool pool = getConstantPool();
+        Klass enclosingKlass = pool.resolvedKlassAt(this, classIndex);
+
+        // Not a method, but a NameAndType entry.
+        int nameAndTypeIndex = enclosingMethodAttr.getNameAndTypeIndex();
+        Symbol<Name> methodName = null;
+        Symbol<? extends Descriptor> methodDesc = null;
+        if (nameAndTypeIndex != 0) {
+            methodName = pool.nameAndTypeName(nameAndTypeIndex);
+            methodDesc = pool.nameAndTypeDescriptor(nameAndTypeIndex);
+        }
+        return new EnclosingMethodInfo(enclosingKlass, methodName, methodDesc);
     }
 
     @Override
     public Klass getEnclosingType() {
-        return null;
+        EnclosingMethodInfo info = getEnclosingMethodInfo();
+        if (info == null) {
+            return getDeclaringClass();
+        }
+        return info.enclosingClass();
     }
 
     @Override
@@ -945,6 +1060,7 @@ public final class ObjectKlass extends Klass implements AttributedElement {
     }
 
     @Override
+    @TruffleBoundary
     public Klass[] getNestMembers() {
         if (this != nest()) {
             return nest().getNestMembers();
@@ -1097,100 +1213,6 @@ public final class ObjectKlass extends Klass implements AttributedElement {
         return -1;
     }
 
-    @TruffleBoundary
-    public Method resolveInterfaceMethod(Symbol<Name> methodName, Symbol<Signature> signature) {
-        assert isInterface();
-        /*
-         * 2. Otherwise, if C declares a method with the name and descriptor specified by the
-         * interface method reference, method lookup succeeds.
-         */
-        for (Method m : getDeclaredMethods()) {
-            if (methodName == m.getName() && signature == m.getRawSignature()) {
-                return m;
-            }
-        }
-        /*
-         * 3. Otherwise, if the class Object declares a method with the name and descriptor
-         * specified by the interface method reference, which has its ACC_PUBLIC flag set and does
-         * not have its ACC_STATIC flag set, method lookup succeeds.
-         */
-        assert getSuperKlass().getType() == Types.java_lang_Object;
-        Method m = getSuperKlass().lookupDeclaredMethod(methodName, signature);
-        if (m != null && m.isPublic() && !m.isStatic()) {
-            return m;
-        }
-
-        Method resolved = null;
-        /*
-         * Interfaces are sorted, superinterfaces first; traverse in reverse order to get
-         * maximally-specific first.
-         */
-        for (int i = getiKlassTable().length - 1; i >= 0; i--) {
-            ObjectKlass superInterf = getiKlassTable()[i].getKlass();
-            for (Method.MethodVersion superMVersion : superInterf.getInterfaceMethodsTable()) {
-                Method superM = superMVersion.getMethod();
-                /*
-                 * Methods in superInterf.getInterfaceMethodsTable() are all non-static non-private
-                 * methods declared in superInterf.
-                 */
-                if (methodName == superM.getName() && signature == superM.getRawSignature()) {
-                    if (resolved == null) {
-                        resolved = superM;
-                    } else {
-                        /*
-                         * 4. Otherwise, if the maximally-specific superinterface methods
-                         * (&sect;5.4.3.3) of C for the name and descriptor specified by the method
-                         * reference include exactly one method that does not have its ACC_ABSTRACT
-                         * flag set, then this method is chosen and method lookup succeeds.
-                         *
-                         * 5. Otherwise, if any superinterface of C declares a method with the name
-                         * and descriptor specified by the method reference that has neither its
-                         * ACC_PRIVATE flag nor its ACC_STATIC flag set, one of these is arbitrarily
-                         * chosen and method lookup succeeds.
-                         */
-                        resolved = Method.resolveMaximallySpecific(resolved, superM).getMethod();
-                        if (resolved.getITableIndex() == -1) {
-                            /*
-                             * Multiple maximally specific: this method has a poison pill.
-                             *
-                             * NOTE: Since java 9, we can invokespecial interface methods (ie: a
-                             * call directly to the resolved method, rather than after an interface
-                             * lookup). We are looking up a method taken from the implemented
-                             * interface (and not from a currently non-existing itable of the
-                             * implementing interface). This difference, and the possibility of
-                             * invokespecial, means that we cannot return the looked up method
-                             * directly in case of multiple maximally specific method. thus, we
-                             * spawn a new proxy method, attached to no method table, just to fail
-                             * if invokespecial.
-                             */
-                            assert (resolved.identity() == superM.identity());
-                            resolved.setITableIndex(superM.getITableIndex());
-                        }
-                    }
-                }
-            }
-        }
-        return resolved;
-    }
-
-    @Override
-    public Method lookupMethod(Symbol<Name> methodName, Symbol<Signature> signature, LookupMode lookupMode) {
-        KLASS_LOOKUP_METHOD_COUNT.inc();
-        Method method = lookupDeclaredMethod(methodName, signature, lookupMode);
-        if (method == null) {
-            // Implicit interface methods.
-            method = lookupMirandas(methodName, signature);
-        }
-        if (method == null && isSignaturePolymorphicHolderType(getType())) {
-            method = lookupSignaturePolymorphicMethod(methodName, signature, lookupMode);
-        }
-        if (method == null && getSuperKlass() != null) {
-            CompilerAsserts.partialEvaluationConstant(this);
-            method = getSuperKlass().lookupMethod(methodName, signature, lookupMode);
-        }
-        return method;
-    }
-
     public Field[] getFieldTable() {
         if (!getContext().advancedRedefinitionEnabled()) {
             return fieldTable;
@@ -1233,19 +1255,6 @@ public final class ObjectKlass extends Klass implements AttributedElement {
             // Note that caller is responsible for filtering out removed fields
             return staticFieldTable;
         }
-    }
-
-    private Method lookupMirandas(Symbol<Name> methodName, Symbol<Signature> signature) {
-        if (getMirandaMethods() == null) {
-            return null;
-        }
-        for (Method.MethodVersion miranda : getMirandaMethods()) {
-            Method method = miranda.getMethod();
-            if (method.getName() == methodName && method.getRawSignature() == signature) {
-                return method;
-            }
-        }
-        return null;
     }
 
     void print(PrintStream out) {
@@ -1661,6 +1670,43 @@ public final class ObjectKlass extends Klass implements AttributedElement {
         return size;
     }
 
+    @TruffleBoundary
+    public List<Klass> getDeclaredClasses() {
+        InnerClassesAttribute innerClasses = getAttribute(InnerClassesAttribute.NAME, InnerClassesAttribute.class);
+        if (innerClasses == null || innerClasses.entryCount() == 0) {
+            return List.of();
+        }
+
+        RuntimeConstantPool pool = getConstantPool();
+        List<Klass> innerKlasses = new ArrayList<>();
+
+        for (int i = 0; i < innerClasses.entryCount(); i++) {
+            InnerClassesAttribute.Entry entry = innerClasses.entryAt(i);
+            if (entry.innerClassIndex != 0 && entry.outerClassIndex != 0) {
+                // Check to see if the name matches the class we're looking for
+                // before attempting to find the class.
+                Symbol<Name> outerDescriptor = pool.className(entry.outerClassIndex);
+
+                // Check descriptors/names before resolving.
+                if (outerDescriptor == getName()) {
+                    Klass outerKlass = pool.resolvedKlassAt(this, entry.outerClassIndex);
+                    if (outerKlass == this) {
+                        Klass innerKlass = pool.resolvedKlassAt(this, entry.innerClassIndex);
+                        checkOuterAndInnerClassAgree(outerKlass, innerKlass);
+                        innerKlasses.add(innerKlass);
+                    }
+                }
+            }
+        }
+        return innerKlasses;
+    }
+
+    /**
+     * The versioned, immutable backbone of class metadata in Espresso. It encapsulates all
+     * execution-critical state (dispatch tables, methods, hierarchy, flags, attributes) with a
+     * Truffle Assumption for safe speculative compilation and seamless class redefinition by
+     * swapping versions and invalidating previous ones.
+     */
     public final class KlassVersion implements AttributedElement {
         final Assumption assumption;
         final RuntimeConstantPool pool;

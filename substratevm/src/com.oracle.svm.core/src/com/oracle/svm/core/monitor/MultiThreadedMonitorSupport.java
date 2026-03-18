@@ -34,9 +34,9 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.word.impl.BarrieredAccess;
 
 import com.oracle.svm.core.NeverInline;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.WeakIdentityHashMap;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.TargetClass;
@@ -44,6 +44,7 @@ import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.heap.RestrictHeapAccess.Access;
 import com.oracle.svm.core.hub.DynamicHub;
 import com.oracle.svm.core.hub.DynamicHubCompanion;
+import com.oracle.svm.core.jfr.HasJfrSupport;
 import com.oracle.svm.core.jfr.JfrTicks;
 import com.oracle.svm.core.jfr.events.JavaMonitorInflateEvent;
 import com.oracle.svm.core.monitor.JavaMonitorQueuedSynchronizer.JavaMonitorConditionObject;
@@ -52,10 +53,14 @@ import com.oracle.svm.core.stack.StackOverflowCheck;
 import com.oracle.svm.core.thread.JavaThreads;
 import com.oracle.svm.core.thread.ThreadStatus;
 import com.oracle.svm.core.thread.VMOperationControl;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.core.common.SuppressFBWarnings;
-import jdk.graal.compiler.word.BarrieredAccess;
 import jdk.internal.misc.Unsafe;
 
 /**
@@ -93,6 +98,7 @@ import jdk.internal.misc.Unsafe;
  * object monitor needs a condition object, it is atomically swapped into its
  * {@link JavaMonitorConditionObject} field.
  */
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public class MultiThreadedMonitorSupport extends MonitorSupport {
 
     private static final Unsafe UNSAFE = Unsafe.getUnsafe();
@@ -163,8 +169,8 @@ public class MultiThreadedMonitorSupport extends MonitorSupport {
             monitorTypes.put(DynamicHubCompanion.class, false);
 
             /*
-             * When a thread exits, it locks its own thread mutex and changes its state to
-             * TERMINATED. Without an explict monitor slot, the thread could get parked when
+             * When a thread exits, it synchronizes on its Java Thread object and changes its state
+             * to TERMINATED. Without an explicit monitor slot, the thread could get parked when
              * unlocking its own mutex (because we need to lock the shared monitor map). If the
              * thread gets blocked during unlocking, its thread state would change unexpectedly.
              */
@@ -264,7 +270,9 @@ public class MultiThreadedMonitorSupport extends MonitorSupport {
                 monitor = (JavaMonitor) UNSAFE.compareAndExchangeReference(obj, monitorOffset, null, newMonitor);
                 if (monitor == null) { // successful
                     JavaMonitorInflateEvent.emit(obj, startTicks, MonitorInflationCause.MONITOR_ENTER);
-                    newMonitor.latestJfrTid = current;
+                    if (HasJfrSupport.get()) {
+                        newMonitor.latestJfrTid = current;
+                    }
                     return;
                 }
             }

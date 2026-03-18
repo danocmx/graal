@@ -40,7 +40,6 @@ import static com.oracle.svm.core.posix.headers.Fcntl.O_RDWR;
 
 import java.nio.ByteBuffer;
 
-import jdk.graal.compiler.word.Word;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platform.LINUX;
@@ -49,12 +48,13 @@ import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.impl.Word;
 
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.headers.LibC;
+import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.jdk.DirectByteBufferUtil;
 import com.oracle.svm.core.jdk.management.Target_jdk_internal_vm_VMSupport;
 import com.oracle.svm.core.jvmstat.PerfManager;
@@ -74,7 +74,13 @@ import com.oracle.svm.core.posix.headers.Mman;
 import com.oracle.svm.core.posix.headers.PosixFile;
 import com.oracle.svm.core.posix.headers.Signal;
 import com.oracle.svm.core.posix.headers.Unistd;
-import com.oracle.svm.core.util.BasedOnJDKFile;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.RuntimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
 
 import jdk.graal.compiler.core.common.NumUtil;
 
@@ -83,6 +89,7 @@ import jdk.graal.compiler.core.common.NumUtil;
  * this code so that it can be executed during the isolate startup (i.e., in uninterruptible code),
  * see GR-40601.
  */
+@SingletonTraits(access = RuntimeAccessOnly.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 class PosixPerfMemoryProvider implements PerfMemoryProvider {
     private static final String PERFDATA_NAME = "hsperfdata";
 
@@ -374,7 +381,7 @@ class PosixPerfMemoryProvider implements PerfMemoryProvider {
      * link or if an error occurred.
      */
     @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+13/src/hotspot/os/posix/perfMemory_posix.cpp#L230-L241")
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "LibC.errno() must not be overwritten accidentally.")
     private static boolean isDirectorySecure(CCharPointer directory) {
         PosixStat.stat buf = StackValue.get(PosixStat.sizeOfStatStruct());
         int result = PosixStat.restartableLstat(directory, buf);
@@ -417,7 +424,7 @@ class PosixPerfMemoryProvider implements PerfMemoryProvider {
      * Returns true if the directory is considered a secure location. Returns false if the statbuf
      * is a symbolic link or if an error occurred.
      */
-    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    @Uninterruptible(reason = "LibC.errno() must not be overwritten accidentally.")
     @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-24+13/src/hotspot/os/posix/perfMemory_posix.cpp#L199-L222")
     private static boolean isStatBufSecure(PosixStat.stat statp) {
         if (PosixStat.S_ISLNK(statp) || !PosixStat.S_ISDIR(statp)) {
@@ -539,9 +546,13 @@ class PosixPerfMemoryProvider implements PerfMemoryProvider {
 }
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = SingleLayer.class)
 class PosixPerfMemoryFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
+        if (ImageLayerBuildingSupport.buildingExtensionLayer()) {
+            return false;
+        }
         return VMInspectionOptions.hasJvmstatSupport() && PerfDataMemoryMappedFile.getValue();
     }
 

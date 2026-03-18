@@ -25,12 +25,13 @@
 package com.oracle.svm.core.reflect;
 
 import com.oracle.svm.core.classinitialization.EnsureClassInitializedNode;
-import com.oracle.svm.core.jdk.InternalVMMethod;
+import com.oracle.svm.guest.staging.jdk.InternalVMMethod;
 
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 @InternalVMMethod
 abstract class AbstractCremaAccessor {
+    static final Object[] NO_ARGS = new Object[0];
 
     protected final ResolvedJavaMethod targetMethod;
     private final Class<?> declaringClass;

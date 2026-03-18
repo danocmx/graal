@@ -438,7 +438,7 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
     }
 
     @Override
-    public final boolean prepareForCompilation(boolean rootCompilation, int compilationTier, boolean lastTier) {
+    public boolean prepareForCompilation(boolean rootCompilation, int compilationTier, boolean lastTier) {
         RootNode root = this.rootNode;
         if (root == null) {
             throw CompilerDirectives.shouldNotReachHere("Initialization call targets cannot be compiled.");
@@ -548,6 +548,7 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
     public final void resetCompilationProfile() {
         this.callCount = 0;
         this.callAndLoopCount = 0;
+        this.successfulCompilationsCount = 0;
     }
 
     @Override
@@ -708,7 +709,7 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
 
         // Check if call target is hot enough to compile
         if (shouldCompileImpl(intCallCount, intLoopCallCount)) {
-            boolean isCompiled = compile(!engine.multiTier);
+            boolean isCompiled = compileQueuedByHotness(!engine.multiTier);
             /*
              * If we bypassed the installed code chances are high that the code is currently being
              * debugged. This means that returning true for the interpreter call will retry the call
@@ -777,7 +778,11 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
 
     @TruffleBoundary
     private boolean lastTierCompile() {
-        return compile(true);
+        return compileQueuedByHotness(true);
+    }
+
+    private boolean compileQueuedByHotness(boolean lastTierCompilation) {
+        return compile(lastTierCompilation, CompilationTask.SubmissionReason.HOTNESS);
     }
 
     private void propagateCallAndLoopCount() {
@@ -807,7 +812,9 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
             }
             if (callerCallTarget.frameDescriptorEquals(parentFrameDescriptor)) {
                 callerCallNode.forceInlining();
-                callerCallTarget.callAndLoopCount += this.callAndLoopCount;
+                int oldLoopCallCount = callerCallTarget.callAndLoopCount;
+                int newLoopCallCount = oldLoopCallCount + this.callAndLoopCount;
+                callerCallTarget.callAndLoopCount = newLoopCallCount >= oldLoopCallCount ? newLoopCallCount : Integer.MAX_VALUE;
                 return;
             }
             currentSingleCallNode = callerCallTarget.singleCallNode;
@@ -849,12 +856,16 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
 
     private RuntimeException handleException(VirtualFrame frame, Throwable t) {
         Throwable profiledT = profileExceptionType(t);
-        OptimizedRuntimeAccessor.LANGUAGE.addStackFrameInfo(null, this, profiledT, frame);
+        VirtualFrame effectiveFrame = frame;
+        if (rootNode instanceof BaseOSRRootNode osrRootNode) {
+            effectiveFrame = osrRootNode.getFrame(frame);
+        }
+        OptimizedRuntimeAccessor.LANGUAGE.addStackFrameInfo(null, this, profiledT, effectiveFrame);
         throw rethrow(profiledT);
     }
 
-    private void notifyDeoptimized(VirtualFrame frame) {
-        runtime().getListener().onCompilationDeoptimized(this, frame);
+    protected void notifyDeoptimized(VirtualFrame frame) {
+        runtime().getListener().onCompilationDeoptimized(this, frame, null);
     }
 
     protected static OptimizedTruffleRuntime runtime() {
@@ -882,11 +893,7 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
             assert !validate || OptimizedRuntimeAccessor.NODES.getCallTargetWithoutInitialization(rootNode) == this : "Call target out of sync.";
 
             OptimizedRuntimeAccessor.INSTRUMENT.onFirstExecution(getRootNode(), validate);
-            if (engine.callTargetStatistics) {
-                this.initializedTimestamp = System.nanoTime();
-            } else {
-                this.initializedTimestamp = 0L;
-            }
+            this.initializedTimestamp = System.nanoTime();
             initialized = true;
         }
     }
@@ -976,6 +983,10 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
      * for compilation.
      */
     public final boolean compile(boolean lastTierCompilation) {
+        return compile(lastTierCompilation, CompilationTask.SubmissionReason.EXPLICIT);
+    }
+
+    private boolean compile(boolean lastTierCompilation, CompilationTask.SubmissionReason submissionReason) {
         boolean lastTier = !engine.firstTierOnly && lastTierCompilation;
         if (!needsCompile(lastTier)) {
             return true;
@@ -1035,7 +1046,7 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
                             return false;
                         }
 
-                        this.compilationTask = task = runtime().submitForCompilation(this, lastTier);
+                        this.compilationTask = task = runtime().submitForCompilation(this, lastTier, submissionReason);
                     } catch (RejectedExecutionException e) {
                         return false;
                     }
@@ -1362,6 +1373,12 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
 
     public final long getInitializedTimestamp() {
         return initializedTimestamp;
+    }
+
+    final void setInitializedTimestamp(long timestamp) {
+        if (initialized) {
+            initializedTimestamp = timestamp;
+        }
     }
 
     public final Map<String, Object> getDebugProperties() {
@@ -1779,9 +1796,7 @@ public abstract class OptimizedCallTarget implements TruffleCompilable, RootCall
 
     public final OptimizedDirectCallNode getCallSiteForSplit() {
         if (isSplit()) {
-            OptimizedDirectCallNode callNode = getSingleCallNode();
-            assert callNode != null;
-            return callNode;
+            return getSingleCallNode();
         } else {
             return null;
         }

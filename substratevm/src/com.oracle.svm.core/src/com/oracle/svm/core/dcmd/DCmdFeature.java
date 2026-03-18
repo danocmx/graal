@@ -33,9 +33,14 @@ import com.oracle.svm.core.VMInspectionOptions;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.RuntimeCompilation;
+import com.oracle.svm.core.jfr.JfrFeature;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 /** Registers the infrastructure for diagnostic commands. */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class DCmdFeature implements InternalFeature {
     @Override
     public boolean isInConfiguration(IsInConfigurationAccess access) {
@@ -53,7 +58,7 @@ public class DCmdFeature implements InternalFeature {
 
         dcmdSupport.registerCommand(new GCRunDCmd());
 
-        if (VMInspectionOptions.hasJfrSupport()) {
+        if (JfrFeature.isInConfiguration(false)) {
             dcmdSupport.registerCommand(new JfrStartDCmd());
             dcmdSupport.registerCommand(new JfrStopDCmd());
             dcmdSupport.registerCommand(new JfrCheckDCmd());

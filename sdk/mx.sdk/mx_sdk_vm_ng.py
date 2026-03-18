@@ -455,12 +455,11 @@ class NativeImageBuildTask(mx.BuildTask):
             experimental_build_args += ['-H:NativeLinkerOption=' + e for e in self.args.alt_ldflags.split()]
         classpath_and_modulepath = mx.get_runtime_jvm_args(self.subject.deps, include_system_properties=False)
         build_args += classpath_and_modulepath + [
-            '--no-fallback',
             '-march=compatibility',  # Target maximum portability
             '--parallelism=' + str(self.parallelism),
             '--link-at-build-time',
             # we want "25.0.0-dev" and not "dev" (the default used in NativeImage#prepareImageBuildArgs)
-            '-Dorg.graalvm.version={}'.format(_suite.release_version()),
+            '-Dorg.graalvm.version={}'.format(get_bootstrap_graalvm_version()),
         ] + mx_sdk_vm_impl.svm_experimental_options(experimental_build_args)
         if os.environ.get('JVMCI_VERSION_CHECK'):
             # Propagate this env var when running native image from mx
@@ -505,15 +504,38 @@ class NativeImageBuildTask(mx.BuildTask):
         native_image_command = [native_image_bin] + build_args
         return native_image_command
 
+    def _get_args_file(self):
+        return self.subject.output_file() + '.args'
+
+    @staticmethod
+    def _quote_argfile_arg(arg):
+        if arg == '':
+            return '""'
+        if not any(ch.isspace() or ch in ('#', '"', "'") for ch in arg):
+            return arg
+        escaped = arg.replace('\\', '\\\\').replace('\"', '\\\"')
+        return f'"{escaped}"'
+
+    def _write_args_file(self, args_file, args):
+        with open(args_file, 'w', encoding='utf-8') as f:
+            for arg in args:
+                f.write(self._quote_argfile_arg(arg))
+                f.write('\n')
+
     def build(self):
         mx_util.ensure_dir_exists(self.subject.build_directory())
         native_image_command = self.get_build_command()
+        run_command = native_image_command
+        if mx.is_windows():
+            args_file = self._get_args_file()
+            self._write_args_file(args_file, native_image_command[1:])
+            run_command = [native_image_command[0], '@' + args_file]
 
         # Prefix native-image builds that print straight to stdout or stderr with [<output_filename>:<pid>]
         out = mx.PrefixCapture(lambda l: mx.log(l, end=''), self.subject.output_file_name())
         err = mx.PrefixCapture(lambda l: mx.log(l, end='', file=sys.stderr), out.identifier)
 
-        mx.run(native_image_command, nonZeroIsFatal=True, out=out, err=err)
+        mx.run(run_command, nonZeroIsFatal=True, out=out, err=err)
 
         with open(self._get_command_file(), 'w') as f:
             f.writelines((l + linesep for l in native_image_command))
@@ -526,6 +548,9 @@ class NativeImageBuildTask(mx.BuildTask):
         build_directory = self.subject.build_directory()
         if exists(build_directory):
             mx.rmtree(build_directory)
+        args_file = self._get_args_file()
+        if exists(args_file):
+            os.remove(args_file)
 
     def __str__(self):
         return 'Building {}'.format(self.subject.name)
@@ -619,7 +644,7 @@ class ThinLauncherProject(mx_native.DefaultNativeProject):
             '-O3', # Note: no -g to save 0.2MB on Linux
             '-DCP_SEP=' + os.pathsep,
             '-DDIR_SEP=' + ('\\\\' if mx.is_windows() else '/'),
-            '-DGRAALVM_VERSION=' + _suite.release_version(),
+            f'-DGRAALVM_VERSION={get_bootstrap_graalvm_version()}',
             ]
         if not mx.is_windows():
             _dynamic_cflags += ['-pthread']
@@ -1112,7 +1137,6 @@ class DeliverableStandaloneArchive(DeliverableArchiveSuper):
         mapping = {
             'graal-js': 'js',
             'graal-nodejs': 'nodejs',
-            'truffleruby': 'ruby',
             'graalpython': 'python',
         }
         if not language_id and suite.name in mapping:
@@ -1159,7 +1183,7 @@ class DeliverableStandaloneArchive(DeliverableArchiveSuper):
             }
         }
         self.standalone_dir_dist = standalone_dir_dist
-        maven = { 'groupId': 'org.graalvm', 'tag': 'standalone' } if suite.name != 'truffleruby' else {}
+        maven = { 'groupId': 'org.graalvm', 'tag': 'standalone' }
 
         assert theLicense is None, "the 'license' attribute is ignored for DeliverableStandaloneArchive"
         theLicense = ['GFTC' if is_enterprise() else 'UPL']

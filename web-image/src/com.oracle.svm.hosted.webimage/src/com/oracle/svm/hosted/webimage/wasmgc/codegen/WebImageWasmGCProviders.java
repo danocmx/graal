@@ -27,8 +27,11 @@ package com.oracle.svm.hosted.webimage.wasmgc.codegen;
 
 import java.io.PrintStream;
 
+import org.graalvm.nativeimage.ImageSingletons;
+
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.hosted.meta.HostedMethod;
+import com.oracle.svm.hosted.webimage.codegen.WebImageProviders;
 import com.oracle.svm.hosted.webimage.wasm.ast.id.KnownIds;
 import com.oracle.svm.hosted.webimage.wasm.ast.id.WasmIdFactory;
 import com.oracle.svm.hosted.webimage.wasm.codegen.WasmCodeGenTool;
@@ -36,12 +39,17 @@ import com.oracle.svm.hosted.webimage.wasm.codegen.WebImageWasmNodeLowerer;
 import com.oracle.svm.hosted.webimage.wasm.codegen.WebImageWasmProviders;
 import com.oracle.svm.hosted.webimage.wasmgc.ast.id.GCKnownIds;
 import com.oracle.svm.hosted.webimage.wasmgc.types.WasmGCUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 import com.oracle.svm.webimage.wasm.types.WasmUtil;
 
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.nodes.spi.CoreProviders;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class WebImageWasmGCProviders extends WebImageWasmProviders {
 
     protected final WasmGCBuilder builder;
@@ -50,6 +58,10 @@ public class WebImageWasmGCProviders extends WebImageWasmProviders {
     public WebImageWasmGCProviders(RuntimeConfiguration runtimeConfig, CoreProviders underlyingProviders, PrintStream out, DebugContext debug) {
         super(runtimeConfig, underlyingProviders, out, debug);
         this.builder = new WasmGCBuilder(this);
+    }
+
+    public static WebImageWasmGCProviders singleton() {
+        return (WebImageWasmGCProviders) ImageSingletons.lookup(WebImageProviders.class);
     }
 
     /**

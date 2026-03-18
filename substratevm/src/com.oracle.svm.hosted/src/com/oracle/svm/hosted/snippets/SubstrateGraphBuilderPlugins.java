@@ -45,7 +45,6 @@ import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.hosted.RuntimeProxyCreation;
-import org.graalvm.nativeimage.hosted.RuntimeReflection;
 import org.graalvm.nativeimage.hosted.RuntimeSerialization;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.PointerBase;
@@ -64,7 +63,6 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.classinitialization.EnsureClassInitializedNode;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.encoder.SymbolEncoder;
-import com.oracle.svm.core.graal.jdk.SubstrateObjectCloneWithExceptionNode;
 import com.oracle.svm.core.graal.nodes.DeoptEntryNode;
 import com.oracle.svm.core.graal.nodes.FarReturnNode;
 import com.oracle.svm.core.graal.nodes.FieldOffsetNode;
@@ -73,6 +71,7 @@ import com.oracle.svm.core.graal.nodes.ReadReturnAddressNode;
 import com.oracle.svm.core.graal.nodes.SubstrateCompressionNode;
 import com.oracle.svm.core.graal.nodes.SubstrateNarrowOopStamp;
 import com.oracle.svm.core.graal.nodes.SubstrateReflectionGetCallerClassNode;
+import com.oracle.svm.core.graal.snippets.SubstrateSharedGraphBuilderPlugins;
 import com.oracle.svm.core.graal.nodes.TestDeoptimizeNode;
 import com.oracle.svm.core.graal.stackvalue.LateStackValueNode;
 import com.oracle.svm.core.graal.stackvalue.StackValueNode;
@@ -81,35 +80,35 @@ import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
 import com.oracle.svm.core.heap.ReferenceAccess;
 import com.oracle.svm.core.heap.ReferenceAccessImpl;
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.identityhashcode.SubstrateIdentityHashCodeNode;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
 import com.oracle.svm.core.imagelayer.LoadImageSingletonFactory;
 import com.oracle.svm.core.jdk.proxy.DynamicProxyRegistry;
-import com.oracle.svm.core.layeredimagesingleton.LayeredImageSingletonSupport;
 import com.oracle.svm.core.nodes.foreign.MemoryArenaValidInScopeNode;
-import com.oracle.svm.core.option.HostedOptionKey;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind;
-import com.oracle.svm.core.traits.SingletonTraitKind;
 import com.oracle.svm.core.util.UserError;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.AbstractAnalysisMetadataTrackingNode;
-import com.oracle.svm.hosted.FallbackFeature;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.ReachabilityCallbackNode;
 import com.oracle.svm.hosted.SharedArenaSupport;
 import com.oracle.svm.hosted.code.SubstrateCompilationDirectives;
 import com.oracle.svm.hosted.dynamicaccessinference.DynamicAccessInferenceLog;
 import com.oracle.svm.hosted.dynamicaccessinference.StrictDynamicAccessInferenceFeature;
+import com.oracle.svm.hosted.imagelayer.HostedImageLayerBuildingSupport;
 import com.oracle.svm.hosted.nodes.DeoptProxyNode;
 import com.oracle.svm.hosted.nodes.ReadReservedRegister;
 import com.oracle.svm.hosted.substitute.AnnotationSubstitutionProcessor;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.singletons.LayeredImageSingletonSupport;
+import com.oracle.svm.shared.singletons.traits.LayeredInstallationKindSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.util.OriginalClassProvider;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.util.dynamicaccess.JVMCIRuntimeReflection;
 
 import jdk.graal.compiler.core.common.CompressEncoding;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.core.common.NativeImageSupport;
 import jdk.graal.compiler.core.common.type.AbstractObjectStamp;
 import jdk.graal.compiler.core.common.type.IntegerStamp;
@@ -128,14 +127,11 @@ import jdk.graal.compiler.nodes.LogicNode;
 import jdk.graal.compiler.nodes.NodeView;
 import jdk.graal.compiler.nodes.PiNode;
 import jdk.graal.compiler.nodes.ValueNode;
-import jdk.graal.compiler.nodes.calc.ConditionalNode;
 import jdk.graal.compiler.nodes.calc.NarrowNode;
 import jdk.graal.compiler.nodes.calc.ZeroExtendNode;
 import jdk.graal.compiler.nodes.extended.BytecodeExceptionNode;
-import jdk.graal.compiler.nodes.extended.ClassIsArrayNode;
 import jdk.graal.compiler.nodes.extended.LoadHubNode;
 import jdk.graal.compiler.nodes.graphbuilderconf.GraphBuilderContext;
-import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugin;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugin.Receiver;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugin.RequiredInlineOnlyInvocationPlugin;
 import jdk.graal.compiler.nodes.graphbuilderconf.InvocationPlugin.RequiredInvocationPlugin;
@@ -155,6 +151,7 @@ import jdk.graal.compiler.nodes.virtual.AllocatedObjectNode;
 import jdk.graal.compiler.nodes.virtual.CommitAllocationNode;
 import jdk.graal.compiler.nodes.virtual.VirtualArrayNode;
 import jdk.graal.compiler.nodes.virtual.VirtualObjectNode;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.replacements.StandardGraphBuilderPlugins;
 import jdk.graal.compiler.replacements.StandardGraphBuilderPlugins.AllocateUninitializedArrayPlugin;
@@ -253,7 +250,7 @@ public class SubstrateGraphBuilderPlugins {
                 }
             });
 
-            if (ModuleLayer.boot().findModule("jdk.unsupported").isPresent()) {
+            if (JVMCIReflectionUtil.bootModuleLayer().findModule("jdk.unsupported").isPresent()) {
                 Registration customConstructor = new Registration(plugins, loader.findClassOrFail("sun.reflect.ReflectionFactory"));
                 customConstructor.register(new RequiredInvocationPlugin("newConstructorForSerialization", Receiver.class, Class.class) {
                     @Override
@@ -295,6 +292,13 @@ public class SubstrateGraphBuilderPlugins {
 
     public static <T> T asConstantObject(GraphBuilderContext b, Class<T> type, ValueNode node) {
         return StandardGraphBuilderPlugins.asConstantObject(b, type, node);
+    }
+
+    public static ResolvedJavaType asConstantType(GraphBuilderContext b, ValueNode node) {
+        if (node instanceof ConstantNode constantNode && constantNode.getValue() instanceof JavaConstant javaConstant && javaConstant.isNonNull()) {
+            return b.getConstantReflection().asJavaType(javaConstant);
+        }
+        return null;
     }
 
     public static int asConstantIntegerOrMinusOne(ValueNode node) {
@@ -373,27 +377,7 @@ public class SubstrateGraphBuilderPlugins {
     }
 
     private static void registerSystemPlugins(InvocationPlugins plugins) {
-        Registration r = new Registration(plugins, System.class);
-        if (SubstrateOptions.FoldSecurityManagerGetter.getValue()) {
-            r.register(new RequiredInvocationPlugin("getSecurityManager") {
-                @Override
-                public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                    /* System.getSecurityManager() always returns null. */
-                    b.addPush(JavaKind.Object, ConstantNode.forConstant(JavaConstant.NULL_POINTER, b.getMetaAccess(), b.getGraph()));
-                    return true;
-                }
-            });
-        }
-
-        r.register(new RequiredInvocationPlugin("identityHashCode", Object.class) {
-
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode object) {
-                b.addPush(JavaKind.Int, SubstrateIdentityHashCodeNode.create(object, b.bci(), b));
-                return true;
-            }
-
-        });
+        SubstrateSharedGraphBuilderPlugins.registerSystemPlugins(plugins);
     }
 
     private static void registerReflectionPlugins(InvocationPlugins plugins) {
@@ -500,15 +484,10 @@ public class SubstrateGraphBuilderPlugins {
         Class<?>[] interfaces = extractClassArray(b, annotationSubstitutions, interfacesNode);
         if (interfaces != null) {
             var caller = b.getGraph().method();
-            var method = b.getMethod();
-            var bci = b.bci();
 
             return () -> {
                 /* The interfaces array can be empty. The java.lang.reflect.Proxy API allows it. */
                 RuntimeProxyCreation.register(interfaces);
-                if (ImageSingletons.contains(FallbackFeature.class)) {
-                    ImageSingletons.lookup(FallbackFeature.class).addAutoProxyInvoke(method, bci);
-                }
                 if (Options.DynamicProxyTracing.getValue()) {
                     System.out.println("Successfully determined constant value for interfaces argument of call to " + targetMethod.format("%H.%n(%p)") +
                                     " reached from " + caller.format("%H.%n(%p)") + ". " + "Registered proxy class for " + Arrays.toString(interfaces) + ".");
@@ -739,18 +718,18 @@ public class SubstrateGraphBuilderPlugins {
      * them for reflection/unsafe access.
      */
     private static void interceptUpdaterInvoke(GraphBuilderContext b, ValueNode tclassNode, ValueNode fieldNameNode) {
-        Class<?> tclass = asConstantObject(b, Class.class, tclassNode);
+        ResolvedJavaType type = asConstantType(b, tclassNode);
         String fieldName = asConstantObject(b, String.class, fieldNameNode);
-        if (tclass != null && fieldName != null) {
+        if (type != null && fieldName != null) {
             try {
-                Field field = tclass.getDeclaredField(fieldName);
+                ResolvedJavaField field = JVMCIReflectionUtil.getUniqueDeclaredField(type, fieldName);
                 /*
                  * Register the holder class and the field for reflection. This also registers the
                  * field for unsafe access.
                  */
-                RuntimeReflection.register(tclass);
-                RuntimeReflection.register(field);
-            } catch (NoSuchFieldException e) {
+                JVMCIRuntimeReflection.register(type);
+                JVMCIRuntimeReflection.register(field);
+            } catch (NoSuchFieldError e) {
                 /*
                  * Ignore the exception. If the field does not exist, there will be an error at run
                  * time. That is then the same behavior as on HotSpot. The allocation of the
@@ -763,24 +742,7 @@ public class SubstrateGraphBuilderPlugins {
     }
 
     private static void registerObjectPlugins(InvocationPlugins plugins) {
-        Registration r = new Registration(plugins, Object.class);
-        r.register(new RequiredInvocationPlugin("clone", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                ValueNode object = receiver.get(true);
-                b.addPush(JavaKind.Object, new SubstrateObjectCloneWithExceptionNode(MacroParams.of(b, targetMethod, object)));
-                return true;
-            }
-        });
-
-        r.register(new RequiredInvocationPlugin("hashCode", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                ValueNode object = receiver.get(true);
-                b.addPush(JavaKind.Int, SubstrateIdentityHashCodeNode.create(object, b.bci(), b));
-                return true;
-            }
-        });
+        SubstrateSharedGraphBuilderPlugins.registerObjectPlugins(plugins);
     }
 
     private static void registerUnsafePlugins(InvocationPlugins plugins) {
@@ -791,17 +753,15 @@ public class SubstrateGraphBuilderPlugins {
         r.register(new RequiredInvocationPlugin("objectFieldOffset", Receiver.class, Class.class, String.class) {
             @Override
             public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode classNode, ValueNode nameNode) {
-                Class<?> clazz = asConstantObject(b, Class.class, classNode);
+                ResolvedJavaType type = asConstantType(b, classNode);
                 String fieldName = asConstantObject(b, String.class, nameNode);
-                if (clazz != null && fieldName != null) {
-                    Field targetField;
-                    try {
-                        targetField = clazz.getDeclaredField(fieldName);
-                    } catch (ReflectiveOperationException | LinkageError e) {
-                        return false;
+                if (type != null && fieldName != null) {
+                    ResolvedJavaField targetField = JVMCIReflectionUtil.getUniqueDeclaredField(false, type, fieldName);
+                    if (targetField != null) {
+                        return processFieldOffset(b, receiver, false, targetField);
                     }
-                    return processFieldOffset(b, receiver, targetField, false);
                 }
+                /* A NullPointerException will be thrown at run time for this call. */
                 return false;
             }
         });
@@ -819,8 +779,10 @@ public class SubstrateGraphBuilderPlugins {
             public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode fieldNode) {
                 Field targetField = asConstantObject(b, Field.class, fieldNode);
                 if (targetField != null) {
-                    return processFieldOffset(b, receiver, targetField, isSunMiscUnsafe);
+                    ResolvedJavaField resolvedJavaField = b.getMetaAccess().lookupJavaField(targetField);
+                    return processFieldOffset(b, receiver, isSunMiscUnsafe, resolvedJavaField);
                 }
+                /* A NullPointerException will be thrown at run time for this call. */
                 return false;
             }
         });
@@ -840,8 +802,10 @@ public class SubstrateGraphBuilderPlugins {
             public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode fieldNode) {
                 Field targetField = asConstantObject(b, Field.class, fieldNode);
                 if (targetField != null) {
-                    return processFieldOffset(b, receiver, targetField, isSunMiscUnsafe);
+                    ResolvedJavaField resolvedJavaField = b.getMetaAccess().lookupJavaField(targetField);
+                    return processFieldOffset(b, receiver, isSunMiscUnsafe, resolvedJavaField);
                 }
+                /* A NullPointerException will be thrown at run time for this call. */
                 return false;
             }
         });
@@ -869,8 +833,8 @@ public class SubstrateGraphBuilderPlugins {
         });
     }
 
-    private static boolean processFieldOffset(GraphBuilderContext b, Receiver receiver, Field targetField, boolean isSunMiscUnsafe) {
-        if (!isValidField(targetField, isSunMiscUnsafe)) {
+    private static boolean processFieldOffset(GraphBuilderContext b, Receiver receiver, boolean isSunMiscUnsafe, ResolvedJavaField resolvedJavaField) {
+        if (!isValidField(resolvedJavaField, isSunMiscUnsafe)) {
             return false;
         }
 
@@ -880,15 +844,11 @@ public class SubstrateGraphBuilderPlugins {
          * The static analysis registers the field for unsafe access if the node remains in the
          * graph until then.
          */
-        b.addPush(JavaKind.Long, FieldOffsetNode.create(JavaKind.Long, b.getMetaAccess().lookupJavaField(targetField)));
+        b.addPush(JavaKind.Long, FieldOffsetNode.create(JavaKind.Long, resolvedJavaField));
         return true;
     }
 
-    private static boolean isValidField(Field targetField, boolean isSunMiscUnsafe) {
-        if (targetField == null) {
-            /* A NullPointerException will be thrown at run time for this call. */
-            return false;
-        }
+    private static boolean isValidField(ResolvedJavaField targetField, boolean isSunMiscUnsafe) {
         /*
          * sun.misc.Unsafe performs a few more checks than jdk.internal.misc.Unsafe to explicitly
          * disallow hidden classes and records.
@@ -897,13 +857,18 @@ public class SubstrateGraphBuilderPlugins {
     }
 
     private static boolean processStaticFieldBase(GraphBuilderContext b, Receiver receiver, Field targetField, boolean isSunMiscUnsafe) {
-        if (!isValidField(targetField, isSunMiscUnsafe)) {
+        if (targetField == null) {
+            /* A NullPointerException will be thrown at run time for this call. */
+            return false;
+        }
+        ResolvedJavaField resolvedJavaField = b.getMetaAccess().lookupJavaField(targetField);
+        if (!isValidField(resolvedJavaField, isSunMiscUnsafe)) {
             return false;
         }
 
         /* Emits a null-check for the otherwise unused receiver. */
         receiver.get(true);
-        b.addPush(JavaKind.Object, StaticFieldsSupport.createStaticFieldBaseNode(b.getMetaAccess().lookupJavaField(targetField)));
+        b.addPush(JavaKind.Object, StaticFieldsSupport.createStaticFieldBaseNode(resolvedJavaField));
         return true;
     }
 
@@ -1118,62 +1083,17 @@ public class SubstrateGraphBuilderPlugins {
     }
 
     private static void registerClassPlugins(InvocationPlugins plugins) {
-        Registration r = new Registration(plugins, Class.class);
         SymbolEncoder encoder = SymbolEncoder.singleton();
-        /*
-         * The field DynamicHub.name cannot be final, so we ensure early constant folding using an
-         * invocation plugin.
-         */
-        r.register(new InvocationPlugin.InlineOnlyInvocationPlugin("getName", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                JavaConstant constantReceiver = receiver.get(false).asJavaConstant();
-                if (constantReceiver != null) {
-                    ResolvedJavaType type = b.getConstantReflection().asJavaType(constantReceiver);
-                    if (type != null) {
-                        /*
-                         * Class names must be interned according to the Java specification. This
-                         * also ensures we get the same String instance that is stored in
-                         * DynamicHub.name without having a dependency on DynamicHub.
-                         */
-                        String className = encoder.encodeClass(type.toClassName()).intern();
-                        b.addPush(JavaKind.Object, ConstantNode.forConstant(b.getConstantReflection().forString(className), b.getMetaAccess()));
-                        return true;
-                    }
-                }
-                return false;
-            }
-        });
-        r.register(new InvocationPlugin("isArray", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                LogicNode isArray = b.add(ClassIsArrayNode.create(b.getConstantReflection(), receiver.get(true)));
-                b.addPush(JavaKind.Boolean, ConditionalNode.create(isArray, NodeView.DEFAULT));
-                return true;
-            }
-        });
-
-        registerClassDesiredAssertionStatusPlugin(plugins);
+        SubstrateSharedGraphBuilderPlugins.registerClassPlugins(plugins, encoder::encodeClass, SubstrateGraphBuilderPlugins::hostedDesiredAssertionStatus);
     }
 
-    public static void registerClassDesiredAssertionStatusPlugin(InvocationPlugins plugins) {
-        Registration r = new Registration(plugins, Class.class);
-        r.register(new RequiredInvocationPlugin("desiredAssertionStatus", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                Object clazzOrHub = asConstantObject(b, Object.class, receiver.get(false));
-                boolean desiredAssertionStatus;
-                if (clazzOrHub instanceof Class<?> clazz) {
-                    desiredAssertionStatus = RuntimeAssertionsSupport.singleton().desiredAssertionStatus(clazz);
-                } else if (clazzOrHub instanceof DynamicHub hub) {
-                    desiredAssertionStatus = hub.desiredAssertionStatus();
-                } else {
-                    return false;
-                }
-                b.addPush(JavaKind.Boolean, ConstantNode.forBoolean(desiredAssertionStatus));
-                return true;
-            }
-        });
+    private static Boolean hostedDesiredAssertionStatus(Object clazzOrHub) {
+        if (clazzOrHub instanceof Class<?> clazz) {
+            return RuntimeAssertionsSupport.singleton().desiredAssertionStatus(clazz);
+        } else if (clazzOrHub instanceof DynamicHub hub) {
+            return hub.desiredAssertionStatus();
+        }
+        return null;
     }
 
     protected static long longValue(GraphBuilderContext b, ResolvedJavaMethod targetMethod, ValueNode node, String name) {
@@ -1197,41 +1117,39 @@ public class SubstrateGraphBuilderPlugins {
                 Class<?> key = constantObjectParameter(b, targetMethod, 0, Class.class, classNode);
                 boolean result = ImageSingletons.contains(key);
                 if (!result && imageLayer) {
-                    var trait = layeredSingletonSupport.getTraitForUninstalledSingleton(key, SingletonTraitKind.LAYERED_INSTALLATION_KIND);
-                    if (trait != null && SingletonLayeredInstallationKind.getInstallationKind(trait) == SingletonLayeredInstallationKind.InstallationKind.MULTI_LAYER) {
-                        /*
-                         * The array representation of a MultiLayeredImageSingleton will only be
-                         * created in the final layer. However, we assume they exist in all layers.
-                         * If lookup/getAllLayers is called on this key, then our infrastructure
-                         * will ensure it is either created in the application layer or produce a
-                         * buildtime error.
-                         */
-                        result = true;
-                    } else {
-                        if (trait != null) {
-                            if (sharedLayer) {
+                    var trait = layeredSingletonSupport.getTraitForUninstalledSingleton(key, LayeredInstallationKindSingletonTrait.class);
+                    if (trait != null) {
+                        SingletonLayeredInstallationKind installationKind = trait.metadata();
+                        if (installationKind == SingletonLayeredInstallationKind.MULTI_LAYER) {
+                            /*
+                             * The array representation of a MultiLayeredImageSingleton will only be
+                             * created in the final layer. However, we assume they exist in all
+                             * layers. If lookup/getAllLayers is called on this key, then our
+                             * infrastructure will ensure it is either created in the application
+                             * layer or produce a buildtime error.
+                             */
+                            result = true;
+                        } else {
+                            /*
+                             * Application layer only singletons will only be created in the final
+                             * layer. However, we assume they exist in all layers. Since this method
+                             * is called, our infrastructure will ensure it is either created in the
+                             * application layer or produce a buildtime error.
+                             */
+                            if (sharedLayer && installationKind == SingletonLayeredInstallationKind.APP_LAYER_ONLY) {
                                 /*
-                                 * Application layer only singletons will only be created in the
-                                 * final layer. However, we assume they exist in all layers. Since
-                                 * this method is called, our infrastructure will ensure it is
-                                 * either created in the application layer or produce a buildtime
-                                 * error.
+                                 * Ensure application only image singleton is marked as being
+                                 * required to be installed in the application layer.
                                  */
-                                if (SingletonLayeredInstallationKind.getInstallationKind(trait) == SingletonLayeredInstallationKind.InstallationKind.APP_LAYER_ONLY) {
-                                    /*
-                                     * Ensure application only image singleton is marked as being
-                                     * required to be installed in the application layer.
-                                     */
-                                    LoadImageSingletonFactory.loadApplicationOnlyImageSingleton(key, b.getMetaAccess());
-                                    result = true;
-                                }
+                                LoadImageSingletonFactory.loadApplicationOnlyImageSingleton(key, b.getMetaAccess());
+                                result = true;
                             }
                             if (!result && extensionLayer) {
                                 /*
                                  * Initial layer only image singletons are installed in the initial
                                  * layer, but can be accessed from all extension layers.
                                  */
-                                result = SingletonLayeredInstallationKind.getInstallationKind(trait) == SingletonLayeredInstallationKind.InstallationKind.INITIAL_LAYER_ONLY;
+                                result = installationKind == SingletonLayeredInstallationKind.INITIAL_LAYER_ONLY;
                             }
                         }
                     }
@@ -1246,28 +1164,26 @@ public class SubstrateGraphBuilderPlugins {
                 Class<?> key = constantObjectParameter(b, targetMethod, 0, Class.class, classNode);
 
                 if (imageLayer && !ImageSingletons.contains(key)) {
-                    var trait = layeredSingletonSupport.getTraitForUninstalledSingleton(key, SingletonTraitKind.LAYERED_INSTALLATION_KIND);
+                    var trait = layeredSingletonSupport.getTraitForUninstalledSingleton(key, LayeredInstallationKindSingletonTrait.class);
                     if (trait != null) {
-                        if (sharedLayer) {
-                            if (SingletonLayeredInstallationKind.getInstallationKind(trait) == SingletonLayeredInstallationKind.InstallationKind.APP_LAYER_ONLY) {
-                                /*
-                                 * This singleton is only installed in the application layer heap.
-                                 * All other layers looks refer to this singleton.
-                                 */
-                                b.addPush(JavaKind.Object, LoadImageSingletonFactory.loadApplicationOnlyImageSingleton(key, b.getMetaAccess()));
-                                return true;
-                            }
+                        var installationKind = trait.metadata();
+                        if (sharedLayer && installationKind == SingletonLayeredInstallationKind.APP_LAYER_ONLY) {
+                            /*
+                             * This singleton is only installed in the application layer heap. All
+                             * other layers looks refer to this singleton.
+                             */
+                            b.addPush(JavaKind.Object, LoadImageSingletonFactory.loadApplicationOnlyImageSingleton(key, b.getMetaAccess()));
+                            return true;
                         }
-                        if (extensionLayer) {
-                            if (SingletonLayeredInstallationKind.getInstallationKind(trait) == SingletonLayeredInstallationKind.InstallationKind.INITIAL_LAYER_ONLY) {
-                                /*
-                                 * This singleton is only installed in the initial layer heap. When
-                                 * allowed, all other layers lookups refer to this singleton.
-                                 */
-                                JavaConstant initialSingleton = layeredSingletonSupport.getInitialLayerOnlyImageSingleton(key);
-                                b.addPush(JavaKind.Object, ConstantNode.forConstant(initialSingleton, b.getMetaAccess(), b.getGraph()));
-                                return true;
-                            }
+                        if (extensionLayer && installationKind == SingletonLayeredInstallationKind.INITIAL_LAYER_ONLY) {
+                            /*
+                             * This singleton is only installed in the initial layer heap. When
+                             * allowed, all other layers lookups refer to this singleton.
+                             */
+                            var loader = HostedImageLayerBuildingSupport.singleton().getSingletonLoader();
+                            JavaConstant initialSingleton = loader.loadInitialLayerOnlyImageSingleton(key);
+                            b.addPush(JavaKind.Object, ConstantNode.forConstant(initialSingleton, b.getMetaAccess(), b.getGraph()));
+                            return true;
                         }
                     }
                 }

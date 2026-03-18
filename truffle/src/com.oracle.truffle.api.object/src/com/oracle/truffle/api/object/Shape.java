@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -62,7 +62,6 @@ import java.util.function.BiConsumer;
 import java.util.function.IntPredicate;
 import java.util.function.Predicate;
 
-import com.oracle.truffle.api.impl.AbstractAssumption;
 import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.Equivalence;
 import org.graalvm.collections.Pair;
@@ -75,6 +74,7 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.dsl.Idempotent;
 import com.oracle.truffle.api.dsl.NonIdempotent;
+import com.oracle.truffle.api.impl.AbstractAssumption;
 
 /**
  * A Shape is an immutable descriptor of the current object "shape" of a DynamicObject, i.e., object
@@ -481,7 +481,7 @@ public final class Shape {
         /**
          * Sets an assumption that allows specializations on constant object instances with this
          * shape, as long as the assumption is valid. The assumption should be valid only if code is
-         * not shared across contexts and invalidated when this is not longer true. The assumption
+         * not shared across contexts and invalidated when this is no longer true. The assumption
          * may be {@code null} in which case this feature is disabled (the default).
          *
          * @see #propertyAssumptions(boolean)
@@ -698,6 +698,12 @@ public final class Shape {
         return propertyMap.get(key);
     }
 
+    @TruffleBoundary
+    Location getLocation(Object key) {
+        Property property = propertyMap.get(key);
+        return property == null ? null : property.getLocation();
+    }
+
     /**
      * Add a new property in the map, yielding a new or cached Shape object.
      *
@@ -707,7 +713,7 @@ public final class Shape {
      */
     @TruffleBoundary
     protected Shape addProperty(Property property) {
-        return ObsolescenceStrategy.addProperty(this, property);
+        return ObsolescenceStrategy.addProperty(this, property, true);
     }
 
     /**
@@ -733,6 +739,11 @@ public final class Shape {
     @TruffleBoundary
     protected Shape defineProperty(Object key, Object value, int propertyFlags, int putFlags) {
         return ObsolescenceStrategy.defineProperty(this, key, value, propertyFlags, putFlags);
+    }
+
+    @TruffleBoundary
+    Shape defineProperty(Object key, Object value, int propertyFlags, int putFlags, Property existing) {
+        return ObsolescenceStrategy.defineProperty(this, key, value, propertyFlags, existing, putFlags);
     }
 
     /**
@@ -928,13 +939,32 @@ public final class Shape {
         return ObsolescenceStrategy.replaceProperty(this, oldProperty, newProperty);
     }
 
+    @TruffleBoundary
+    Shape setPropertyFlags(Property oldProperty, int newFlags) {
+        if (oldProperty.getFlags() == newFlags) {
+            return this;
+        }
+        return replaceProperty(oldProperty, oldProperty.copyWithFlags(newFlags));
+    }
+
     /**
-     * Get the last property.
+     * Gets the last property.
      *
+     * @return the last property in the shape or {@code null} if empty
      * @since 0.8 or earlier
      */
     public Property getLastProperty() {
         return propertyMap.getLastProperty();
+    }
+
+    /**
+     * Gets the first property.
+     *
+     * @return the first property in the shape or {@code null} if empty
+     * @since 25.1
+     */
+    public Property getFirstProperty() {
+        return propertyMap.getFirstProperty();
     }
 
     /**
@@ -1037,7 +1067,7 @@ public final class Shape {
      * @since 0.8 or earlier
      */
     public Shape getRoot() {
-        return UnsafeAccess.unsafeCast(root, Shape.class, true, true);
+        return UnsafeAccess.unsafeCast(root, Shape.class, true, true, false);
     }
 
     /**
@@ -1617,7 +1647,7 @@ public final class Shape {
 
     /**
      * {@return a string representation of the object}
-     * 
+     *
      * @since 25.1
      */
     @Override

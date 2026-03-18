@@ -28,8 +28,8 @@ import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.Uninterruptible;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.util.VMError;
 
 /**
  * A condition that has minimal requirements on Java code. The implementation does not perform
@@ -47,23 +47,13 @@ public class VMCondition extends VMLockingPrimitive {
     private final String name;
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    public VMCondition(VMMutex mutex) {
-        this(mutex, null);
-    }
-
-    @Platforms(Platform.HOSTED_ONLY.class)
     public VMCondition(VMMutex mutex, String name) {
         this.mutex = mutex;
-        this.name = name;
+        this.name = mutex.getName() + "_" + name;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public String getName() {
-        return name == null ? mutex.getName() : mutex.getName() + "_" + name;
-    }
-
-    @Platforms(Platform.HOSTED_ONLY.class)
-    public String getConditionName() {
         return name;
     }
 

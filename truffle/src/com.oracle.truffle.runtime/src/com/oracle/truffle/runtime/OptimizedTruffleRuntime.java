@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -179,6 +179,7 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
         private static final boolean INLINING_ROOT_SUPPORTED = findInliningRootSupported();
         private static final MethodHandle GET_ANNOTATION = findGetAnnotation();
 
+        @SuppressWarnings("deprecation")
         private static boolean findInliningRootSupported() {
             try {
                 HostMethodInfo.class.getDeclaredConstructor(boolean.class, boolean.class, boolean.class, boolean.class, boolean.class);
@@ -401,6 +402,7 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public ConstantFieldInfo getConstantFieldInfo(ResolvedJavaField field) {
         if (getAnnotation(Child.class, field) != null) {
             return ConstantFieldInfo.CHILD;
@@ -459,7 +461,12 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
                         CompilerDirectives.CompilationFinal.class,
                         CompilerDirectives.TruffleBoundary.class,
                         CompilerDirectives.ValueType.class,
+                        CompilerDirectives.EarlyInline.class,
+                        CompilerDirectives.EarlyEscapeAnalysis.class,
                         HostCompilerDirectives.BytecodeInterpreterSwitch.class,
+                        HostCompilerDirectives.BytecodeInterpreterFetchOpcode.class,
+                        HostCompilerDirectives.BytecodeInterpreterHandler.class,
+                        HostCompilerDirectives.BytecodeInterpreterHandlerConfig.class,
                         HostCompilerDirectives.BytecodeInterpreterSwitchBoundary.class,
                         HostCompilerDirectives.InliningCutoff.class,
                         HostCompilerDirectives.InliningRoot.class,
@@ -541,6 +548,9 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
         }
         for (String className : new String[]{
                         "com.oracle.truffle.api.strings.TStringOps",
+                        "java.util.concurrent.atomic.AtomicIntegerFieldUpdater$AtomicIntegerFieldUpdaterImpl",
+                        "java.util.concurrent.atomic.AtomicLongFieldUpdater$CASUpdater",
+                        "java.util.concurrent.atomic.AtomicReferenceFieldUpdater$AtomicReferenceFieldUpdaterImpl",
                         "com.oracle.truffle.api.object.UnsafeAccess", // JDK 25+
                         // JDK < 25, remove after dropping JDK 21 compatibility (GR-64984):
                         "com.oracle.truffle.object.UnsafeAccess",
@@ -600,6 +610,7 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public HostMethodInfo getHostMethodInfo(ResolvedJavaMethod method) {
         if (Lazy.INLINING_ROOT_SUPPORTED) {
             return new HostMethodInfo(isTruffleBoundary(method),
@@ -637,6 +648,7 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public PartialEvaluationMethodInfo getPartialEvaluationMethodInfo(ResolvedJavaMethod method) {
         TruffleBoundary truffleBoundary = getAnnotation(TruffleBoundary.class, method);
         TruffleCallBoundary truffleCallBoundary = getAnnotation(TruffleCallBoundary.class, method);
@@ -1017,7 +1029,22 @@ public abstract class OptimizedTruffleRuntime implements TruffleRuntime, Truffle
     @SuppressWarnings("try")
     public CompilationTask submitForCompilation(OptimizedCallTarget optimizedCallTarget, boolean lastTierCompilation) {
         Priority priority = new Priority(optimizedCallTarget.getCallAndLoopCount(), lastTierCompilation ? Priority.Tier.LAST : Priority.Tier.FIRST);
-        return getCompileQueue().submitCompilation(priority, optimizedCallTarget);
+        return getCompileQueue().submitCompilation(priority, optimizedCallTarget, CompilationTask.SubmissionReason.EXPLICIT);
+    }
+
+    @SuppressWarnings("try")
+    public CompilationTask submitForCompilation(OptimizedCallTarget optimizedCallTarget, boolean lastTierCompilation, CompilationTask.SubmissionReason submissionReason) {
+        BackgroundCompileQueue compileQueue = getCompileQueue();
+        if (compileQueue == null) {
+            /*
+             * Binary compatibility for Substrate runtimes that only override the legacy 2-arg
+             * submit method. This occurs with older GraalVM 21 runtime mixes where hosted mode and
+             * single-threaded runtime execution do not initialize a background compile queue.
+             */
+            return submitForCompilation(optimizedCallTarget, lastTierCompilation);
+        }
+        Priority priority = new Priority(optimizedCallTarget.getCallAndLoopCount(), lastTierCompilation ? Priority.Tier.LAST : Priority.Tier.FIRST);
+        return compileQueue.submitCompilation(priority, optimizedCallTarget, submissionReason);
     }
 
     @SuppressWarnings("all")

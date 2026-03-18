@@ -35,7 +35,7 @@ import org.graalvm.nativeimage.ImageSingletons;
 
 import com.oracle.svm.configure.config.ConfigurationMemberInfo;
 import com.oracle.svm.configure.config.SignatureUtil;
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Inject;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
@@ -78,7 +78,7 @@ public final class Target_java_lang_reflect_Constructor {
      */
     @Inject //
     @RecomputeFieldValue(kind = Kind.Reset) //
-    Target_jdk_internal_reflect_ConstructorAccessor constructorAccessorFromMetadata;
+    public Target_jdk_internal_reflect_ConstructorAccessor constructorAccessorFromMetadata;
 
     @Alias
     @TargetElement(name = CONSTRUCTOR_NAME)

@@ -25,8 +25,6 @@
 package com.oracle.svm.hosted.c;
 
 import java.io.IOException;
-import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -35,7 +33,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
@@ -48,7 +45,7 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.graalvm.nativeimage.AnnotationAccess;
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.c.CContext;
@@ -67,6 +64,9 @@ import org.graalvm.word.SignedWord;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordBase;
 import org.graalvm.word.WordFactory;
+import org.graalvm.word.impl.BarrieredAccess;
+import org.graalvm.word.impl.ObjectAccess;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.graal.pointsto.infrastructure.WrappedElement;
 import com.oracle.graal.pointsto.meta.AnalysisType;
@@ -75,28 +75,32 @@ import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.c.libc.MuslLibC;
 import com.oracle.svm.core.jdk.PlatformNativeLibrarySupport;
 import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.hosted.GuestTypes;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.NativeImageOptions;
 import com.oracle.svm.hosted.c.info.ElementInfo;
 import com.oracle.svm.hosted.c.libc.HostedLibCBase;
 import com.oracle.svm.hosted.classinitialization.ClassInitializationSupport;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 import com.oracle.svm.util.AnnotationUtil;
-import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.util.ReflectionUtil.ReflectionUtilError;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil.ReflectionUtilError;
 
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
 import jdk.graal.compiler.debug.DebugContext;
 import jdk.graal.compiler.hotspot.JVMCIVersionCheck;
-import jdk.graal.compiler.word.BarrieredAccess;
-import jdk.graal.compiler.word.ObjectAccess;
-import jdk.graal.compiler.word.Word;
 import jdk.graal.compiler.word.WordTypes;
 import jdk.vm.ci.code.TargetDescription;
 import jdk.vm.ci.meta.ConstantReflectionProvider;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
+import jdk.vm.ci.meta.annotation.Annotated;
 
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
 public final class NativeLibraries {
 
     private final MetaAccessProvider metaAccess;
@@ -181,7 +185,7 @@ public final class NativeLibraries {
         }
 
         public List<String> sort() {
-            final Set<Dependency> discovered = new HashSet<>();
+            final EconomicSet<Dependency> discovered = EconomicSet.create();
             final Set<Dependency> processed = new LinkedHashSet<>();
 
             for (Dependency dep : allDependencies.values()) {
@@ -200,7 +204,7 @@ public final class NativeLibraries {
             return allDependencies.get(libName);
         }
 
-        private void visit(Dependency dep, Set<Dependency> discovered, Set<Dependency> processed) {
+        private void visit(Dependency dep, EconomicSet<Dependency> discovered, Set<Dependency> processed) {
             if (processed.contains(dep)) {
                 return;
             }
@@ -444,14 +448,15 @@ public final class NativeLibraries {
     }
 
     public void processCLibraryAnnotations(ImageClassLoader loader) {
-        for (Class<?> clazz : loader.findAnnotatedClasses(CLibrary.class, false)) {
-            if (makeContext(getDirectives(metaAccess.lookupJavaType(clazz))).isInConfiguration()) {
-                annotated.add(clazz.getAnnotation(CLibrary.class));
+        GuestTypes guestTypes = loader.guestTypes;
+        for (ResolvedJavaType clazz : guestTypes.findAnnotatedTypes(CLibrary.class, false)) {
+            if (makeContext(getDirectives(clazz)).isInConfiguration()) {
+                annotated.add(AnnotationUtil.getAnnotation(clazz, CLibrary.class));
             }
         }
-        for (Method method : loader.findAnnotatedMethods(CLibrary.class)) {
-            if (makeContext(getDirectives(metaAccess.lookupJavaType(method.getDeclaringClass()))).isInConfiguration()) {
-                annotated.add(method.getAnnotation(CLibrary.class));
+        for (ResolvedJavaMethod method : guestTypes.findAnnotatedMethods(CLibrary.class)) {
+            if (makeContext(getDirectives(method.getDeclaringClass())).isInConfiguration()) {
+                annotated.add(AnnotationUtil.getAnnotation(method, CLibrary.class));
             }
         }
     }
@@ -541,7 +546,7 @@ public final class NativeLibraries {
         return result;
     }
 
-    private static Object unwrap(AnnotatedElement e) {
+    private static Object unwrap(Annotated e) {
         Object element = e;
         assert element instanceof ResolvedJavaType || element instanceof ResolvedJavaMethod;
         while (element instanceof WrappedElement) {
@@ -551,13 +556,13 @@ public final class NativeLibraries {
         return element;
     }
 
-    public void registerElementInfo(AnnotatedElement e, ElementInfo elementInfo) {
+    public void registerElementInfo(Annotated e, ElementInfo elementInfo) {
         Object element = unwrap(e);
         assert !elementToInfo.containsKey(element);
         elementToInfo.put(element, elementInfo);
     }
 
-    public ElementInfo findElementInfo(AnnotatedElement element) {
+    public ElementInfo findElementInfo(Annotated element) {
         Object element1 = unwrap(element);
         ElementInfo result = elementToInfo.get(element1);
         if (result == null && element1 instanceof ResolvedJavaType && ((ResolvedJavaType) element1).getInterfaces().length == 1) {
@@ -586,7 +591,7 @@ public final class NativeLibraries {
     }
 
     public CLibrary getCLibrary(ResolvedJavaMethod method) {
-        CLibrary cLibrary = AnnotationAccess.getAnnotation(method, CLibrary.class);
+        CLibrary cLibrary = AnnotationUtil.getAnnotation(method, CLibrary.class);
         if (cLibrary == null) {
             return getCLibrary(method.getDeclaringClass());
         }
@@ -594,7 +599,7 @@ public final class NativeLibraries {
     }
 
     public CLibrary getCLibrary(ResolvedJavaType type) {
-        CLibrary cLibrary = AnnotationAccess.getAnnotation(type, CLibrary.class);
+        CLibrary cLibrary = AnnotationUtil.getAnnotation(type, CLibrary.class);
         if (cLibrary != null) {
             return cLibrary;
         } else if (type.getEnclosingType() != null) {

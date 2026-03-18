@@ -26,14 +26,18 @@ package com.oracle.svm.util;
 
 import java.util.Objects;
 
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
+
 import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.ResolvedJavaType;
 
 /**
  * A wrapper type that can be unwrapped to an original host VM type.
  *
- * @see GraalAccess
+ * @see GuestAccess
  */
+@Platforms(Platform.HOSTED_ONLY.class)
 public interface OriginalClassProvider {
 
     /**
@@ -53,7 +57,7 @@ public interface OriginalClassProvider {
     }
 
     static Class<?> getJavaClass(JavaType type) {
-        Class<?> result = GraalAccess.getOriginalSnippetReflection().originalClass(getOriginalType(type));
+        Class<?> result = GuestAccess.get().getSnippetReflection().originalClass(getOriginalType(type));
         /*
          * Currently, we do not support types at run time that have no matching java.lang.Class in
          * the image generator. So while there is no 1:1 mapping between JVMCI types and classes,

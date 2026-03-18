@@ -25,10 +25,10 @@
  */
 package com.oracle.svm.core.jfr.throttling;
 
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
-import com.oracle.svm.core.util.BasedOnJDKFile;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.core.jdk.UninterruptibleUtils;
 import com.oracle.svm.core.jfr.JfrTicks;
 

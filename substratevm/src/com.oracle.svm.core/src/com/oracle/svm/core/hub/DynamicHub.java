@@ -26,7 +26,6 @@ package com.oracle.svm.core.hub;
 
 import static com.oracle.svm.configure.config.ConfigurationMemberInfo.ConfigurationMemberDeclaration;
 import static com.oracle.svm.core.MissingRegistrationUtils.throwMissingRegistrationErrors;
-import static com.oracle.svm.core.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.core.annotate.TargetElement.CONSTRUCTOR_NAME;
 import static com.oracle.svm.core.code.RuntimeMetadataDecoderImpl.ALL_CLASSES_FLAG;
 import static com.oracle.svm.core.code.RuntimeMetadataDecoderImpl.ALL_CONSTRUCTORS_FLAG;
@@ -48,6 +47,8 @@ import static com.oracle.svm.core.graal.meta.DynamicHubOffsets.writeObject;
 import static com.oracle.svm.core.graal.meta.DynamicHubOffsets.writeShort;
 import static com.oracle.svm.core.hub.registry.AbstractRuntimeClassRegistry.UNINITIALIZED_DECLARING_CLASS_SENTINEL;
 import static com.oracle.svm.core.reflect.RuntimeMetadataDecoder.NO_DATA;
+import static com.oracle.svm.espresso.classfile.Constants.ACC_ENUM;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 
 import java.io.InputStream;
 import java.io.Serializable;
@@ -78,30 +79,32 @@ import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.function.BiFunction;
 import java.util.function.IntFunction;
+import java.util.function.Supplier;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
+import org.graalvm.nativeimage.impl.ClassLoadingSupport;
 import org.graalvm.nativeimage.impl.InternalPlatform.NATIVE_ONLY;
 
 import com.oracle.svm.configure.ClassNameSupport;
 import com.oracle.svm.configure.config.SignatureUtil;
-import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.BuildPhaseProvider.AfterHeapLayout;
 import com.oracle.svm.core.BuildPhaseProvider.AfterHostedUniverse;
 import com.oracle.svm.core.NeverInline;
 import com.oracle.svm.core.RuntimeAssertionsSupport;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.SubstrateUtil;
-import com.oracle.svm.core.Uninterruptible;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Delete;
 import com.oracle.svm.core.annotate.InjectAccessors;
@@ -123,6 +126,7 @@ import com.oracle.svm.core.heap.ReferenceMapIndex;
 import com.oracle.svm.core.heap.UnknownObjectField;
 import com.oracle.svm.core.heap.UnknownPrimitiveField;
 import com.oracle.svm.core.hub.RuntimeClassLoading.ClassDefinitionInfo;
+import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.hub.registry.ClassRegistries;
 import com.oracle.svm.core.imagelayer.DynamicImageLayerInfo;
 import com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport;
@@ -137,13 +141,15 @@ import com.oracle.svm.core.reflect.RuntimeMetadataDecoder;
 import com.oracle.svm.core.reflect.fieldaccessor.UnsafeFieldAccessorFactory;
 import com.oracle.svm.core.reflect.serialize.SerializationSupport;
 import com.oracle.svm.core.reflect.target.Target_jdk_internal_reflect_ConstantPool;
-import com.oracle.svm.core.util.BasedOnJDKFile;
 import com.oracle.svm.core.util.LazyFinalReference;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
+import com.oracle.svm.shared.singletons.MultiLayeredImageSingleton;
+import com.oracle.svm.shared.util.BasedOnJDKFile;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil.ReflectionUtilError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
-import com.oracle.svm.util.GraalAccess;
-import com.oracle.svm.util.ReflectionUtil;
-import com.oracle.svm.util.ReflectionUtil.ReflectionUtilError;
+import com.oracle.svm.util.GuestAccess;
 
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.core.common.NumUtil;
@@ -458,7 +464,7 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         Object loader = PredefinedClassesSupport.isPredefined(hostedJavaClass) ? NO_CLASS_LOADER : classLoader;
         Object classData = SharedSecrets.getJavaLangAccess().classData(hostedJavaClass);
         this.companion = DynamicHubCompanion.createHosted(hostedJavaClass.getModule(), superType, sourceFileName,
-                        modifiers, loader, nestHost, simpleBinaryName, declaringClass, signature, classData);
+                        modifiers, loader, nestHost, simpleBinaryName, declaringClass, signature, classData, this);
     }
 
     /**
@@ -511,11 +517,14 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
             }
         }
 
+        DynamicHubOffsets dynamicHubOffsets = DynamicHubOffsets.singleton();
         DynamicHubCompanion companion = DynamicHubCompanion.createAtRuntime(module, superHub, sourceFileName, modifiers, classLoader, simpleBinaryName, declaringClass, signature, info);
 
         /* Always allow unsafe allocation for classes that were loaded at run-time. */
-        companion.canUnsafeAllocate = true;
+        companion.canUnsafeAllocate = RuntimeDynamicAccessMetadata.emptySet(false);
         companion.classInitializationInfo = ClassInitializationInfo.forRuntimeLoadedClass(false, hasClassInitializer);
+        byte additionalFlags = NumUtil.safeToUByte((companion.additionalFlags & 0xff) | makeFlag(ADDITIONAL_FLAGS_INSTANTIATED_BIT, true));
+        writeByte(companion, dynamicHubOffsets.getCompanionAdditionalFlagsOffset(), additionalFlags);
 
         assert !isFlagSet(flags, IS_PRIMITIVE_FLAG_BIT);
         boolean isInterface = isFlagSet(flags, IS_INTERFACE_FLAG_BIT);
@@ -564,7 +573,9 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
                     int bits = Integer.BYTES - 1;
                     int alignmentAdjust = ((instanceSize + bits) & ~bits) - instanceSize;
                     identityHashOffset = instanceSize + alignmentAdjust;
-                    instanceSize = identityHashOffset + Integer.BYTES;
+                    if (!ol.isIdentityHashFieldOptional()) {
+                        instanceSize = identityHashOffset + Integer.BYTES;
+                    }
                 } else {
                     throw VMError.shouldNotReachHere("Unexpected identity hash mode");
                 }
@@ -573,36 +584,14 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         }
 
         companion.interfacesEncoding = interfacesEncoding;
-        // GR-57813: setup a LazyFinalReference that calls `values` via reflection.
-        companion.enumConstantsReference = null;
-
-        /*
-         * GR-61330:
-         *
-         * These are read in snippets and must also not be set directly or the analysis would not
-         * consider them to be immutable:
-         *
-         * companion.arrayHub = null;
-         *
-         * companion.additionalFlags =
-         * NumUtil.safeToUByte(makeFlag(ADDITIONAL_FLAGS_INSTANTIATED_BIT, true));
-         */
-
-        // GR-61330: only write if the field exists according to analysis
-        // companion.metaType = null;
-
-        // GR-57813
-        companion.hubMetadata = null;
-        companion.reflectionMetadata = null;
 
         /* Allocate memory in the metaspace and copy data from the Java heap to the metaspace. */
         DynamicHub hub = Metaspace.singleton().allocateDynamicHub(vTableEntries);
         int[] openTypeWorldTypeCheckSlots = Metaspace.singleton().copyToMetaspace(typeCheckSlotsHeapArray);
         int[] openTypeWorldInterfaceHashTable = Metaspace.singleton().copyToMetaspace(interfaceHashTableHeapArray);
-        int referenceMapCompressedOffset = RuntimeInstanceReferenceMapSupport.singleton().getOrCreateReferenceMap(superHub, declaredInstanceReferenceFieldOffsets);
+        int referenceMapCompressedOffset = RuntimeInstanceReferenceMapSupport.singleton().getOrCreateReferenceMap(superHub, monitorOffset, declaredInstanceReferenceFieldOffsets);
 
         /* Write fields in defining order. */
-        DynamicHubOffsets dynamicHubOffsets = DynamicHubOffsets.singleton();
         writeObject(hub, dynamicHubOffsets.getNameOffset(), name);
         writeByte(hub, dynamicHubOffsets.getHubTypeOffset(), hubType);
         writeByte(hub, dynamicHubOffsets.getReferenceTypeOffset(), referenceType.getValue());
@@ -633,9 +622,31 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         writeInt(hub, dynamicHubOffsets.getReferenceMapCompressedOffsetOffset(), referenceMapCompressedOffset);
         writeByte(hub, dynamicHubOffsets.getLayerIdOffset(), NumUtil.safeToByte(DynamicImageLayerInfo.CREMA_LAYER_ID));
 
+        if ((modifiers & ACC_ENUM) != 0 && DynamicHub.toClass(superHub) == Enum.class) {
+            companion.enumConstantsReference = new LazyFinalReference<>(hub.new EnumConstantsSupplier());
+        } else {
+            companion.enumConstantsReference = null;
+        }
+
         /* Skip vtable (special treatment). */
 
         return finishInitialization(hub, companion);
+    }
+
+    @BasedOnJDKFile("https://github.com/openjdk/jdk/blob/jdk-25+36/src/java.base/share/classes/java/lang/Class.java#L3435-L3446")
+    private final class EnumConstantsSupplier implements Supplier<Object[]> {
+        @Override
+        public Object[] get() {
+            try {
+                Method values = getMethod("values");
+                values.setAccessible(true);
+                return (Object[]) values.invoke(null);
+            } catch (InvocationTargetException | NoSuchMethodException | IllegalAccessException | NullPointerException | ClassCastException ex) {
+                // These can happen when users concoct enum-like classes
+                // that don't comply with the enum spec.
+                return null;
+            }
+        }
     }
 
     /**
@@ -743,9 +754,8 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         this.openTypeWorldInterfaceHashParam = openTypeWorldInterfaceHashParam;
     }
 
-    @Platforms(Platform.HOSTED_ONLY.class)
     public void setArrayHub(DynamicHub arrayHub) {
-        assert (companion.arrayHub == null || companion.arrayHub == arrayHub) && arrayHub != null;
+        assert (companion.arrayHub == null || companion.arrayHub == arrayHub) && arrayHub != null : companion.arrayHub + " - " + arrayHub;
         assert arrayHub.getComponentHub() == this;
         companion.arrayHub = arrayHub;
     }
@@ -756,7 +766,6 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         companion.interfacesEncoding = interfacesEncoding;
     }
 
-    @Platforms(Platform.HOSTED_ONLY.class)
     public Object getInterfacesEncoding() {
         return companion.interfacesEncoding;
     }
@@ -814,9 +823,10 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    public void setReflectionMetadata(int fieldsEncodingIndex, int methodsEncodingIndex, int constructorsEncodingIndex, int recordComponentsEncodingIndex, int classFlags) {
+    public void setReflectionMetadata(int fieldsEncodingIndex, int methodsEncodingIndex, int constructorsEncodingIndex, int recordComponentsEncodingIndex, int unsafeAllocationIndex, int classFlags) {
         assert companion.reflectionMetadata == null;
-        ImageReflectionMetadata reflectionMetadata = new ImageReflectionMetadata(fieldsEncodingIndex, methodsEncodingIndex, constructorsEncodingIndex, recordComponentsEncodingIndex, classFlags);
+        ImageReflectionMetadata reflectionMetadata = new ImageReflectionMetadata(fieldsEncodingIndex, methodsEncodingIndex, constructorsEncodingIndex, recordComponentsEncodingIndex,
+                        unsafeAllocationIndex, classFlags);
         if (ImageLayerBuildingSupport.buildingImageLayer()) {
             LayeredReflectionMetadataSingleton.currentLayer().setReflectionMetadata(this, reflectionMetadata);
         } else {
@@ -903,6 +913,7 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         return companion.metaType;
     }
 
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public ResolvedJavaType getInterpreterType() {
         return companion.interpreterType;
     }
@@ -1007,8 +1018,29 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         return componentType;
     }
 
+    /**
+     * Returns a hub for an array type whose component type is this hub.
+     * <p>
+     * This method should only be preferred to {@link #getOrCreateArrayHub()} when used at build
+     * time or in snippets. For reflective accesses {@link #arrayType()} can be used instead, in
+     * particular it should be used when reflection metadata validation should be performed.
+     * <p>
+     * If this returns {@code null}, in cases where runtime class loading is
+     * {@linkplain RuntimeClassLoading#isSupported supported}, {@link #getOrCreateArrayHub} can be
+     * used to create the array hub. In that case, the return value of {@link #getOrCreateArrayHub}
+     * must be used since this may in some cases continue to return {@code null}.
+     */
     public DynamicHub getArrayHub() {
         return companion.arrayHub;
+    }
+
+    public DynamicHub getOrCreateArrayHub() {
+        DynamicHub arrayHub = getArrayHub();
+        if (RuntimeClassLoading.isSupported() && arrayHub == null) {
+            arrayHub = CremaSupport.singleton().getOrCreateArrayHub(this);
+            assert arrayHub != null;
+        }
+        return arrayHub;
     }
 
     @AlwaysInline("GC performance")
@@ -1038,7 +1070,7 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
     /**
      * The identifier of the {@linkplain com.oracle.svm.core.imagelayer.ImageLayerBuildingSupport
      * layer} that introduces this type which is an index into the array returned by
-     * {@link com.oracle.svm.core.layeredimagesingleton.MultiLayeredImageSingleton#getAllLayers}.
+     * {@link MultiLayeredImageSingleton#getAllLayers}.
      */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
     public int getLayerId() {
@@ -1050,24 +1082,40 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
     }
 
     public boolean canUnsafeInstantiateAsInstanceFastPath() {
-        return canUnsafeAllocate();
+        return companion.canUnsafeAllocate != null && companion.canUnsafeAllocate.fastPathSatisfied();
     }
 
     public boolean canUnsafeInstantiateAsInstanceSlowPath() {
-        if (ClassForNameSupport.canUnsafeInstantiateAsInstance(this)) {
-            setCanUnsafeAllocate();
-            return true;
-        } else {
-            return false;
-        }
+        RuntimeDynamicAccessMetadata canUnsafeAllocate = canUnsafeAllocate();
+        return canUnsafeAllocate != null && canUnsafeAllocate.satisfied();
     }
 
-    public boolean canUnsafeAllocate() {
+    private RuntimeDynamicAccessMetadata canUnsafeAllocate() {
+        if (companion.canUnsafeAllocate == null) {
+            RuntimeDynamicAccessMetadata unsafeAllocationMetadata = null;
+            if (ImageLayerBuildingSupport.buildingImageLayer()) {
+                for (var reflectionMetadata : LayeredReflectionMetadataSingleton.singletons()) {
+                    if (reflectionMetadata.getReflectionMetadata(this).unsafeAllocatedIndex != NO_DATA) {
+                        unsafeAllocationMetadata = reflectionMetadata.getReflectionMetadata(this).getUnsafeAllocationMetadata(this, layerId);
+                        break;
+                    }
+                }
+            } else {
+                unsafeAllocationMetadata = reflectionMetadata().getUnsafeAllocationMetadata(this, layerId);
+            }
+            companion.canUnsafeAllocate = unsafeAllocationMetadata;
+        }
         return companion.canUnsafeAllocate;
     }
 
+    @Platforms(Platform.HOSTED_ONLY.class)
     public void setCanUnsafeAllocate() {
-        companion.canUnsafeAllocate = true;
+        companion.canUnsafeAllocate = RuntimeDynamicAccessMetadata.createHosted(AccessCondition.unconditional(), false);
+    }
+
+    public boolean isPreservedForUnsafeAllocation() {
+        RuntimeDynamicAccessMetadata canUnsafeAllocate = canUnsafeAllocate();
+        return canUnsafeAllocate != null && canUnsafeAllocate.isPreserved();
     }
 
     public boolean isProxyClass() {
@@ -1205,11 +1253,17 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
 
     @Substitute
     private boolean isEnum() {
+        if (toClass(getSuperclass()) != java.lang.Enum.class) {
+            return false;
+        }
+        if (isRuntimeLoaded()) {
+            return (getModifiers() & ACC_ENUM) != 0;
+        }
         /*
          * We do not do the check "this.getModifiers() & ENUM) != 0" because we do not have the full
          * modifier bits.
          */
-        return toClass(getSuperclass()) == java.lang.Enum.class;
+        return true;
     }
 
     @KeepOriginal
@@ -1341,8 +1395,12 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
             PredefinedClassesSupport.throwIfUnresolvable((Class<?>) declaringClass, getClassLoader0());
             return (Class<?>) declaringClass;
         } else if (declaringClass == UNINITIALIZED_DECLARING_CLASS_SENTINEL) {
-            // GR-70363
-            throw VMError.unimplemented("getDeclaringClass0 is not implemented yet for runtime-loaded classes");
+            if (!RuntimeClassLoading.isSupported()) {
+                throw VMError.shouldNotReachHere("UNINITIALIZED_DECLARING_CLASS_SENTINEL but no runtime class loading");
+            }
+            companion.declaringClass = CremaSupport.singleton().computeEnclosingClass(this);
+            VMError.guarantee(companion.declaringClass != UNINITIALIZED_DECLARING_CLASS_SENTINEL);
+            return getDeclaringClass0();
         } else if (declaringClass instanceof LinkageError) {
             throw (LinkageError) declaringClass;
         } else {
@@ -1679,11 +1737,10 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
     @Substitute
     private RecordComponent[] getRecordComponents0() {
         checkClassFlag(ALL_RECORD_COMPONENTS_FLAG, "getRecordComponents");
-        int layerNum = 0;
         if (ImageLayerBuildingSupport.buildingImageLayer()) {
-            for (var singleton : LayeredReflectionMetadataSingleton.singletons()) {
-                layerNum++;
-                ImageReflectionMetadata reflectionMetadata = singleton.getReflectionMetadata(this);
+            LayeredReflectionMetadataSingleton[] singletons = LayeredReflectionMetadataSingleton.singletons();
+            for (int layerNum = singletons.length - 1; layerNum >= 0; --layerNum) {
+                ImageReflectionMetadata reflectionMetadata = singletons[layerNum].getReflectionMetadata(this);
                 if (reflectionMetadata != null && reflectionMetadata.recordComponentsEncodingIndex != NO_DATA) {
                     return ImageSingletons.lookup(RuntimeMetadataDecoder.class).parseRecordComponents(this, reflectionMetadata.recordComponentsEncodingIndex, layerNum);
                 }
@@ -1694,7 +1751,7 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
             /* See ReflectionDataBuilder.buildRecordComponents() for details. */
             throw recordsNotAvailable(this);
         }
-        return reflectionMetadata().getRecordComponents(this, layerNum);
+        return reflectionMetadata().getRecordComponents(this, 0);
     }
 
     static RuntimeException recordsNotAvailable(DynamicHub declaringClass) {
@@ -1917,7 +1974,7 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
 
     private boolean isHybrid() {
         if (SubstrateUtil.HOSTED) {
-            return AnnotationUtil.isAnnotationPresent(GraalAccess.lookupType(hostedJavaClass), Hybrid.class);
+            return AnnotationUtil.isAnnotationPresent(GuestAccess.get().lookupType(hostedJavaClass), Hybrid.class);
         } else {
             return LayoutEncoding.isHybrid(getLayoutEncoding());
         }
@@ -2103,10 +2160,25 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         if (MetadataTracer.enabled()) {
             MetadataTracer.singleton().traceReflectionArrayType(toClass(this));
         }
-        if (companion.arrayHub == null || (throwMissingRegistrationErrors() && !ClassForNameSupport.isRegisteredClass(ClassNameSupport.getArrayReflectionName(getName())))) {
-            MissingReflectionRegistrationUtils.reportClassAccess(getTypeName() + "[]");
+        DynamicHub arrayHub = getArrayHub();
+        // this access is validated even if the array hub exists
+        if (RuntimeClassLoading.isSupported()) {
+            if (throwMissingRegistrationErrors() &&
+                            ClassLoadingSupport.singleton().followReflectionConfiguration() &&
+                            !ClassForNameSupport.isRegisteredClass(ClassNameSupport.getArrayReflectionName(getName()))) {
+                MissingReflectionRegistrationUtils.reportClassAccess(getTypeName() + "[]");
+            }
+        } else {
+            if (arrayHub == null || (throwMissingRegistrationErrors() &&
+                            !ClassForNameSupport.isRegisteredClass(ClassNameSupport.getArrayReflectionName(getName())))) {
+                MissingReflectionRegistrationUtils.reportClassAccess(getTypeName() + "[]");
+            }
         }
-        return companion.arrayHub;
+        if (RuntimeClassLoading.isSupported() && arrayHub == null) {
+            arrayHub = getOrCreateArrayHub();
+            assert arrayHub != null;
+        }
+        return arrayHub;
     }
 
     @KeepOriginal
@@ -2396,6 +2468,7 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
         return companion.classInitializationInfo.isTypeReached(this);
     }
 
+    @AlwaysInline("Ensure branches are eliminated when it's not supported")
     public boolean isRuntimeLoaded() {
         return RuntimeClassLoading.isSupported() && getLayerId() == DynamicImageLayerInfo.CREMA_LAYER_ID;
     }
@@ -2456,12 +2529,13 @@ public final class DynamicHub implements AnnotatedElement, java.lang.reflect.Typ
 
     private <T> T[] getElements(BiFunction<ReflectionMetadata, Integer, T[]> elementsAccessor, IntFunction<T[]> generator) {
         if (ImageLayerBuildingSupport.buildingImageLayer()) {
-            Collection<T> elements = new ArrayList<>();
+            EconomicSet<T> elements = EconomicSet.create();
             var layeredReflectionMetadata = LayeredReflectionMetadataSingleton.singletons();
-            for (int layerNum = 0; layerNum < layeredReflectionMetadata.length; layerNum++) {
-                Collections.addAll(elements, elementsAccessor.apply(layeredReflectionMetadata[layerNum].getReflectionMetadata(this), layerNum));
+            for (int layerNum = layeredReflectionMetadata.length - 1; layerNum >= 0; layerNum--) {
+                T[] layerElements = elementsAccessor.apply(layeredReflectionMetadata[layerNum].getReflectionMetadata(this), layerNum);
+                elements.addAll(Arrays.asList(layerElements));
             }
-            return elements.toArray(generator);
+            return elements.toArray(generator.apply(elements.size()));
         } else {
             return elementsAccessor.apply(reflectionMetadata(), 0);
         }
@@ -2517,7 +2591,7 @@ final class Target_jdk_internal_reflect_ReflectionFactory {
 
     @Substitute
     private Constructor<?> generateConstructor(Class<?> cl, Constructor<?> constructorToCall) {
-        ConstructorAccessor acc = (ConstructorAccessor) SerializationSupport.getSerializationConstructorAccessor(cl, constructorToCall.getDeclaringClass());
+        ConstructorAccessor acc = (ConstructorAccessor) SerializationSupport.getRuntimeSerializationConstructorAccessor(cl, constructorToCall.getDeclaringClass());
         /*
          * Unlike other root constructors, this constructor is not copied for mutation but directly
          * mutated, as it is not cached. To cache this constructor, setAccessible call must be done

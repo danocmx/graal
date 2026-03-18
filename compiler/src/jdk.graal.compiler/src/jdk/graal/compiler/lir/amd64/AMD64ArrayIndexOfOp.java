@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -199,6 +199,8 @@ public final class AMD64ArrayIndexOfOp extends AMD64ComplexVectorOp {
 
     @Override
     public void emitCode(CompilationResultBuilder crb, AMD64MacroAssembler asm) {
+        AMD64Assembler.AMD64SIMDInstructionEncoding oldEncoding = asm.setTemporaryAvxEncoding(AMD64Assembler.AMD64SIMDInstructionEncoding.VEX);
+
         int nVectors = getNumberOfVectorsInBulkLoop();
         Register arrayPtr = asRegister(arrayReg);
         Register arrayLength = asRegister(lengthReg);
@@ -508,6 +510,8 @@ public final class AMD64ArrayIndexOfOp extends AMD64ComplexVectorOp {
         asm.addq(index, cmpResult);
 
         asm.bind(ret);
+
+        asm.resetAvxEncoding(oldEncoding);
     }
 
     private static void reverseBytesScalar(AMD64MacroAssembler asm, OperandSize valueSize, Register value) {
@@ -655,7 +659,7 @@ public final class AMD64ArrayIndexOfOp extends AMD64ComplexVectorOp {
         for (int i = 0; i < nVectorLoads; i++) {
             int base = i * nValues;
             for (int j = 0; j < (withMask || variant.isMatchRange() ? nValues / 2 : nValues); j++) {
-                emitArrayLoad(asm, vSize, vecArray[base + j], arrayPtr, index, getVectorOffset(nVectorLoads - (i + 1), j, vSize));
+                emitArrayLoad(asm, vSize, vecArray[base + j], arrayPtr, index, arrayIndexStride, getVectorOffset(nVectorLoads - (i + 1), j, vSize));
             }
         }
         switch (variant) {
@@ -841,8 +845,8 @@ public final class AMD64ArrayIndexOfOp extends AMD64ComplexVectorOp {
     }
 
     @SuppressWarnings("fallthrough")
-    private void emitArrayLoad(AMD64MacroAssembler asm, AVXSize targetVectorSize, Register vecDst, Register array, Register index, int displacement) {
-        AMD64Address src = new AMD64Address(array, index, arrayIndexStride, displacement);
+    static void emitArrayLoad(AMD64MacroAssembler asm, AVXSize targetVectorSize, Register vecDst, Register array, Register index, Stride stride, int displacement) {
+        AMD64Address src = new AMD64Address(array, index, stride, displacement);
         if (asm.supports(CPUFeature.AVX)) {
             switch (targetVectorSize) {
                 case DWORD:
@@ -880,7 +884,7 @@ public final class AMD64ArrayIndexOfOp extends AMD64ComplexVectorOp {
         }
     }
 
-    private static OperandSize getOpSize(Stride stride) {
+    static OperandSize getOpSize(Stride stride) {
         switch (stride) {
             case S1:
                 return OperandSize.BYTE;

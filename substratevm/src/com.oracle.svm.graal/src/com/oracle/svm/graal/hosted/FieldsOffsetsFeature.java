@@ -38,11 +38,15 @@ import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.fieldvaluetransformer.FieldValueTransformerWithAvailability;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.graal.GraalCompilerSupport;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringSetupAccessImpl;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.PartiallyLayerAware;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.core.common.FieldIntrospection;
 import jdk.graal.compiler.core.common.Fields;
@@ -59,9 +63,11 @@ import jdk.graal.compiler.lir.LIRInstructionClass;
  * the whole meta-classes. Instead, we just replace the {@code long[]} arrays that hold the actual
  * offsets.
  */
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class FieldsOffsetsFeature implements Feature {
 
     public static class IterationMaskRecomputation implements FieldValueTransformerWithAvailability {
+        // JVMCI migration blocked by GR-72589: Migrate GraalCompilerFeature to terminus
         @Override
         public boolean isAvailable() {
             return BuildPhaseProvider.isHostedUniverseBuilt();
@@ -87,6 +93,7 @@ public class FieldsOffsetsFeature implements Feature {
         }
     }
 
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = PartiallyLayerAware.class)
     static class FieldsOffsetsReplacements {
         protected final Map<long[], FieldsOffsetsReplacement> replacements = new IdentityHashMap<>();
         protected boolean newValuesAvailable;

@@ -24,11 +24,11 @@
  */
 package com.oracle.svm.core.invoke;
 
-import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
+import static com.oracle.svm.shared.util.VMError.shouldNotReachHere;
 
 import java.lang.invoke.MethodHandle;
 
-import com.oracle.svm.core.AlwaysInline;
+import com.oracle.svm.shared.AlwaysInline;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 
 import sun.invoke.util.Wrapper;

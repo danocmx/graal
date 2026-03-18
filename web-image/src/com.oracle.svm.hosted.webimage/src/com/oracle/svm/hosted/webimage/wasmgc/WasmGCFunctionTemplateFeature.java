@@ -33,12 +33,13 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.hosted.Feature;
 
+import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.code.CompileQueue;
 import com.oracle.svm.hosted.meta.HostedMethod;
@@ -52,7 +53,11 @@ import com.oracle.svm.hosted.webimage.wasm.codegen.WebImageWasmBackend;
 import com.oracle.svm.hosted.webimage.wasm.codegen.WebImageWasmCompilationResult;
 import com.oracle.svm.hosted.webimage.wasm.codegen.WebImageWasmProviders;
 import com.oracle.svm.hosted.webimage.wasm.codegen.WebImageWasmVariableAllocation;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.util.JVMCIReflectionUtil;
 import com.oracle.svm.webimage.platform.WebImageWasmGCPlatform;
 
 import jdk.graal.compiler.api.replacements.Fold;
@@ -82,15 +87,16 @@ import jdk.graal.compiler.nodes.UnreachableControlSinkNode;
  */
 @AutomaticallyRegisteredFeature
 @Platforms(WebImageWasmGCPlatform.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class WasmGCFunctionTemplateFeature implements InternalFeature {
     @Override
     public void afterAnalysis(Feature.AfterAnalysisAccess a) {
-        FeatureImpl.AfterAnalysisAccessImpl access = (FeatureImpl.AfterAnalysisAccessImpl) a;
+        AnalysisMetaAccess metaAccess = ((FeatureImpl.AfterAnalysisAccessImpl) a).getMetaAccess();
         /*
          * Store the AnalysisMethod for quick access. This also ensures a HostedMethod is created
          * from it.
          */
-        FunctionTemplateHolder.singleton().functionTemplatesPlaceholder = access.getMetaAccess().lookupJavaMethod(ReflectionUtil.lookupMethod(FunctionTemplateHolder.class, "placeHolderMethod"));
+        FunctionTemplateHolder.singleton().functionTemplatesPlaceholder = (AnalysisMethod) JVMCIReflectionUtil.getUniqueDeclaredMethod(metaAccess, FunctionTemplateHolder.class, "placeHolderMethod");
     }
 
     @Override
@@ -190,6 +196,7 @@ public class WasmGCFunctionTemplateFeature implements InternalFeature {
 
 @AutomaticallyRegisteredImageSingleton
 @Platforms(WebImageWasmGCPlatform.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 class FunctionTemplateHolder {
     /**
      * Reference to the placeholder method used for compiling the {@link WasmFunctionTemplate

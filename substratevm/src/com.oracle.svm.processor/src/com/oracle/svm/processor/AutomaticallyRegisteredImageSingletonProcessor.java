@@ -53,7 +53,7 @@ public class AutomaticallyRegisteredImageSingletonProcessor extends AbstractProc
     static final String ANNOTATION_CLASS_NAME = "com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton";
     static final String LAYERED_SINGLETON_INFO = "com.oracle.svm.core.layeredimagesingleton.LoadedLayeredImageSingletonInfo";
 
-    private final Set<Element> processed = new HashSet<>();
+    private final Set<Element> processed = new HashSet<>(); // noEconomicSet(dependency)
 
     private void processElement(TypeElement annotatedType) {
         String featureClassName = getTypeNameWithEnclosingClasses(annotatedType, "Feature");
@@ -149,13 +149,12 @@ public class AutomaticallyRegisteredImageSingletonProcessor extends AbstractProc
                             import org.graalvm.nativeimage.ImageSingletons;
 
                             import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
-                            import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-                            import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-                            import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-                            import com.oracle.svm.core.traits.SingletonTraits;%3$s
+                            import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+                            import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+                            import com.oracle.svm.shared.singletons.traits.SingletonTraits;%3$s
 
                             @AutomaticallyRegisteredFeature%4$s
-                            @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
+                            @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
                             public class %5$s %6$s {
                                 @Override
                                 public void afterRegistration(AfterRegistrationAccess access) {

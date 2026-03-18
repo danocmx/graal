@@ -42,6 +42,10 @@ import com.oracle.svm.core.pltgot.MethodAddressResolver;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.image.NativeImage;
 import com.oracle.svm.hosted.image.RelocatableBuffer;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 /**
  * An example dynamic method address resolver implementation.
@@ -55,7 +59,7 @@ import com.oracle.svm.hosted.image.RelocatableBuffer;
  * appropriate GOT entry and is used for subsequent calls of the same method.
  *
  */
-
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class IdentityMethodAddressResolverFeature implements InternalFeature {
 
     // Restrict segment names to 16 chars on Mach-O.
@@ -81,7 +85,7 @@ public class IdentityMethodAddressResolverFeature implements InternalFeature {
             GOTEntryAllocator gotEntryAllocator = HostedPLTGOTConfiguration.singleton().getGOTEntryAllocator();
             SharedMethod[] got = gotEntryAllocator.getGOT();
             long methodCount = got.length;
-            int wordSize = ConfigurationValues.getTarget().wordSize;
+            int wordSize = ConfigurationValues.getWordSize();
             long gotSectionSize = methodCount * wordSize;
             offsetsSectionBuffer = new RelocatableBuffer(gotSectionSize, imageObjectFile.getByteOrder());
             offsetsSectionBufferImpl = new BasicProgbitsSectionImpl(offsetsSectionBuffer.getBackingArray());

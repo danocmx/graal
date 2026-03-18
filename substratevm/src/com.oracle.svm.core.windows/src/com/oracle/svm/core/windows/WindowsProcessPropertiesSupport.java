@@ -36,21 +36,25 @@ import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.nativeimage.impl.ProcessPropertiesSupport;
 import org.graalvm.word.PointerBase;
+import org.graalvm.word.impl.Word;
 
 import com.oracle.svm.core.BaseProcessPropertiesSupport;
-import com.oracle.svm.core.c.locale.LocaleSupport;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.graal.stackvalue.UnsafeStackValue;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.core.windows.headers.LibLoaderAPI;
 import com.oracle.svm.core.windows.headers.Process;
 import com.oracle.svm.core.windows.headers.WinBase;
 import com.oracle.svm.core.windows.headers.WinBase.HANDLE;
 import com.oracle.svm.core.windows.headers.WindowsLibC.WCharPointer;
-
-import jdk.graal.compiler.word.Word;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.RuntimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 @AutomaticallyRegisteredImageSingleton(ProcessPropertiesSupport.class)
+@SingletonTraits(access = RuntimeAccessOnly.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class, other = Disallowed.class)
 public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSupport {
 
     @Override
@@ -132,13 +136,6 @@ public class WindowsProcessPropertiesSupport extends BaseProcessPropertiesSuppor
             return null;
         }
         return WindowsSystemPropertiesSupport.toJavaString(path, length);
-    }
-
-    /** This method is unsafe and should not be used, see {@link LocaleSupport}. */
-    @Override
-    @SuppressWarnings("deprecation")
-    public String setLocale(String category, String locale) {
-        throw VMError.intentionallyUnimplemented(); // ExcludeFromJacocoGeneratedReport
     }
 
     @Override

@@ -22,9 +22,8 @@
  */
 package com.oracle.truffle.espresso.substitutions.jvmci;
 
-import static com.oracle.truffle.espresso.descriptors.EspressoSymbols.Names;
-import static com.oracle.truffle.espresso.jvmci.JVMCIUtils.LOGGER;
-import static com.oracle.truffle.espresso.jvmci.JVMCIUtils.findType;
+import static com.oracle.truffle.espresso.impl.jvmci.JVMCIUtils.LOGGER;
+import static com.oracle.truffle.espresso.impl.jvmci.JVMCIUtils.findType;
 import static com.oracle.truffle.espresso.substitutions.jvmci.Target_com_oracle_truffle_espresso_jvmci_meta_EspressoMetaAccessProvider.toJVMCIType;
 import static com.oracle.truffle.espresso.substitutions.jvmci.Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedInstanceType.getRawAnnotationBytes;
 import static com.oracle.truffle.espresso.substitutions.jvmci.Target_jdk_vm_ci_runtime_JVMCI.checkJVMCIAvailable;
@@ -56,7 +55,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
     public static int getOffset(StaticObject self, @Inject EspressoContext context, @Inject EspressoLanguage language) {
         assert context.getLanguage().isInternalJVMCIEnabled();
         Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+        Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
         return Target_sun_misc_Unsafe.getGuestFieldOffset(field, language);
     }
 
@@ -64,7 +63,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
     public static @JavaType(String.class) StaticObject getName0(StaticObject self, @Inject EspressoContext context) {
         assert context.getLanguage().isInternalJVMCIEnabled();
         Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+        Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
         return meta.toGuestString(field.getName());
     }
 
@@ -72,7 +71,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
     public static int getFlags(StaticObject self, @Inject EspressoContext context) {
         assert context.getLanguage().isInternalJVMCIEnabled();
         Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+        Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
         return field.getFlags();
     }
 
@@ -84,8 +83,8 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
         if (StaticObject.isNull(that)) {
             throw meta.throwNullPointerExceptionBoundary();
         }
-        Field selfField = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
-        Field thatField = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(that);
+        Field selfField = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
+        Field thatField = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(that);
         return selfField == thatField; // assumes Field.equals is Object.equals
     }
 
@@ -93,7 +92,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
     public static int hashCode(StaticObject self, @Inject EspressoContext context) {
         assert context.getLanguage().isInternalJVMCIEnabled();
         Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+        Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
         return System.identityHashCode(field); // assumes Field.hashCode is Object.hashCode
     }
 
@@ -110,7 +109,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
                         @Cached("create(context.getMeta().jvmci.UnresolvedJavaType_create.getCallTarget())") DirectCallNode createUnresolved) {
             assert context.getLanguage().isInternalJVMCIEnabled();
             Meta meta = context.getMeta();
-            Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+            Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
             Klass klass = findType(field.getType(), field.getDeclaringKlass(), false, false, meta);
             if (klass != null) {
                 LOGGER.finer(() -> "ERJF.getType0 found " + klass);
@@ -130,7 +129,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
                     @Inject EspressoContext context) {
         checkJVMCIAvailable(context.getLanguage());
         Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+        Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
         return field.makeMirror(meta);
     }
 
@@ -138,16 +137,8 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
     public static int getConstantValueIndex(StaticObject self, @Inject EspressoContext context) {
         assert context.getLanguage().isInternalJVMCIEnabled();
         Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+        Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
         return field.getConstantValueIndex();
-    }
-
-    @Substitution(hasReceiver = true)
-    public static boolean hasAnnotations(StaticObject self, @Inject EspressoContext context) {
-        assert context.getLanguage().isInternalJVMCIEnabled();
-        Meta meta = context.getMeta();
-        Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
-        return field.getAttribute(Names.RuntimeVisibleAnnotations) != null;
     }
 
     @Substitution(hasReceiver = true)
@@ -159,7 +150,7 @@ final class Target_com_oracle_truffle_espresso_jvmci_meta_EspressoResolvedJavaFi
                         @Bind("getContext()") EspressoContext context) {
             assert context.getLanguage().isInternalJVMCIEnabled();
             Meta meta = context.getMeta();
-            Field field = (Field) meta.jvmci.HIDDEN_FIELD_MIRROR.getHiddenObject(self);
+            Field field = (Field) meta.jvmci.EspressoResolvedJavaField_0vmField.getHiddenObject(self);
             return getRawAnnotationBytes(field, category, meta);
         }
     }

@@ -87,7 +87,6 @@ import org.graalvm.word.LocationIdentity;
 import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.api.directives.GraalDirectives;
 import jdk.graal.compiler.api.replacements.SnippetReflectionProvider;
-import jdk.graal.compiler.core.common.LibGraalSupport;
 import jdk.graal.compiler.core.common.calc.Condition;
 import jdk.graal.compiler.core.common.memory.BarrierType;
 import jdk.graal.compiler.core.common.memory.MemoryOrderMode;
@@ -181,6 +180,7 @@ import jdk.graal.compiler.nodes.memory.WriteNode;
 import jdk.graal.compiler.nodes.memory.address.AddressNode;
 import jdk.graal.compiler.nodes.memory.address.OffsetAddressNode;
 import jdk.graal.compiler.nodes.util.GraphUtil;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.options.Option;
 import jdk.graal.compiler.options.OptionKey;
 import jdk.graal.compiler.options.OptionType;
@@ -279,7 +279,7 @@ public class HotSpotGraphBuilderPlugins {
 
             @Override
             public void run() {
-                StandardGraphBuilderPlugins.registerInvocationPlugins(snippetReflection, invocationPlugins, true, false, true);
+                StandardGraphBuilderPlugins.registerInvocationPlugins(snippetReflection, invocationPlugins, true, false, true, true);
 
                 registerObjectPlugins(invocationPlugins, config);
                 registerClassPlugins(plugins, config);

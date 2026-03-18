@@ -26,23 +26,27 @@ package com.oracle.svm.hosted.code.aarch64;
 
 import java.util.function.Consumer;
 
-import com.oracle.svm.util.ClassUtil;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.objectfile.ObjectFile.RelocationKind;
-import com.oracle.svm.core.Uninterruptible;
 import com.oracle.svm.core.feature.AutomaticallyRegisteredFeature;
 import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.graal.code.CGlobalDataReference;
 import com.oracle.svm.core.graal.code.PatchConsumerFactory;
 import com.oracle.svm.core.meta.MethodPointer;
 import com.oracle.svm.core.meta.SubstrateMethodPointerConstant;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.hosted.code.HostedPatcher;
 import com.oracle.svm.hosted.image.RelocatableBuffer;
 import com.oracle.svm.hosted.meta.HostedMethod;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ClassUtil;
+import com.oracle.svm.shared.util.VMError;
 
 import jdk.graal.compiler.asm.Assembler.CodeAnnotation;
 import jdk.graal.compiler.asm.aarch64.AArch64Assembler.SingleInstructionAnnotation;
@@ -56,28 +60,32 @@ import jdk.vm.ci.meta.VMConstant;
 
 @AutomaticallyRegisteredFeature
 @Platforms({Platform.AARCH64.class})
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public class AArch64HostedPatcherFeature implements InternalFeature {
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
-        ImageSingletons.add(PatchConsumerFactory.HostedPatchConsumerFactory.class, new PatchConsumerFactory.HostedPatchConsumerFactory() {
-            @Override
-            public Consumer<CodeAnnotation> newConsumer(CompilationResult compilationResult) {
-                return new Consumer<>() {
-                    @Override
-                    public void accept(CodeAnnotation annotation) {
-                        if (annotation instanceof SingleInstructionAnnotation) {
-                            compilationResult.addAnnotation(new SingleInstructionHostedPatcher((SingleInstructionAnnotation) annotation));
-                        } else if (annotation instanceof AArch64MacroAssembler.MovSequenceAnnotation) {
-                            compilationResult.addAnnotation(new MovSequenceHostedPatcher((AArch64MacroAssembler.MovSequenceAnnotation) annotation));
-                        } else if (annotation instanceof AArch64MacroAssembler.AdrpLdrMacroInstruction) {
-                            compilationResult.addAnnotation(new AdrpLdrMacroInstructionHostedPatcher((AArch64MacroAssembler.AdrpLdrMacroInstruction) annotation));
-                        } else if (annotation instanceof AArch64MacroAssembler.AdrpAddMacroInstruction) {
-                            compilationResult.addAnnotation(new AdrpAddMacroInstructionHostedPatcher((AArch64MacroAssembler.AdrpAddMacroInstruction) annotation));
-                        }
+        ImageSingletons.add(PatchConsumerFactory.HostedPatchConsumerFactory.class, new AArch64HostedPatchConsumerFactory());
+    }
+
+    @SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
+    private static final class AArch64HostedPatchConsumerFactory extends PatchConsumerFactory.HostedPatchConsumerFactory {
+        @Override
+        public Consumer<CodeAnnotation> newConsumer(CompilationResult compilationResult) {
+            return new Consumer<>() {
+                @Override
+                public void accept(CodeAnnotation annotation) {
+                    if (annotation instanceof SingleInstructionAnnotation) {
+                        compilationResult.addAnnotation(new SingleInstructionHostedPatcher((SingleInstructionAnnotation) annotation));
+                    } else if (annotation instanceof AArch64MacroAssembler.MovSequenceAnnotation) {
+                        compilationResult.addAnnotation(new MovSequenceHostedPatcher((AArch64MacroAssembler.MovSequenceAnnotation) annotation));
+                    } else if (annotation instanceof AArch64MacroAssembler.AdrpLdrMacroInstruction) {
+                        compilationResult.addAnnotation(new AdrpLdrMacroInstructionHostedPatcher((AArch64MacroAssembler.AdrpLdrMacroInstruction) annotation));
+                    } else if (annotation instanceof AArch64MacroAssembler.AdrpAddMacroInstruction) {
+                        compilationResult.addAnnotation(new AdrpAddMacroInstructionHostedPatcher((AArch64MacroAssembler.AdrpAddMacroInstruction) annotation));
                     }
-                };
-            }
-        });
+                }
+            };
+        }
     }
 }
 

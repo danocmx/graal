@@ -34,10 +34,10 @@ import java.util.Set;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.heap.RestrictHeapAccess;
 import com.oracle.svm.core.log.Log;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 import jdk.jfr.internal.LogLevel;
 import jdk.jfr.internal.LogTag;
@@ -64,6 +64,12 @@ public class JfrLogging {
     @RestrictHeapAccess(access = NO_ALLOCATION, reason = "May be used during OOME emergency dump.")
     public void warnInternal(String message) {
         int tagSetId = SubstrateUtil.cast(LogTag.JFR_SYSTEM, Target_jdk_jfr_internal_LogTag.class).id;
+        log(tagSetId, JfrLogConfiguration.JfrLogLevel.WARNING.level, message);
+    }
+
+    @RestrictHeapAccess(access = NO_ALLOCATION, reason = "May be used during OOME emergency dump.")
+    public void logJfrSettingWarning(String message) {
+        int tagSetId = SubstrateUtil.cast(LogTag.JFR_SETTING, Target_jdk_jfr_internal_LogTag.class).id;
         log(tagSetId, JfrLogConfiguration.JfrLogLevel.WARNING.level, message);
     }
 

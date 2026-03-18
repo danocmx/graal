@@ -26,13 +26,17 @@ package com.oracle.svm.util;
 
 import java.lang.reflect.Executable;
 
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
+
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
  * A wrapper method that can be unwrapped to an original host VM method.
  *
- * @see GraalAccess
+ * @see GuestAccess
  */
+@Platforms(Platform.HOSTED_ONLY.class)
 public interface OriginalMethodProvider {
 
     /**
@@ -61,7 +65,7 @@ public interface OriginalMethodProvider {
         ResolvedJavaMethod originalMethod = getOriginalMethod(method);
         if (originalMethod != null) {
             try {
-                return GraalAccess.getOriginalSnippetReflection().originalMethod(originalMethod);
+                return GuestAccess.get().getSnippetReflection().originalMethod(originalMethod);
             } catch (IllegalArgumentException | LinkageError ignored) {
                 /*
                  * Ignore any linking problems and unsupported method types. Looking up a reflective

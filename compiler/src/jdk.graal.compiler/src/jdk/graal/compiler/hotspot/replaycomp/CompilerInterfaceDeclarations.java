@@ -25,6 +25,7 @@
 package jdk.graal.compiler.hotspot.replaycomp;
 
 import static java.util.FormattableFlags.ALTERNATE;
+import static jdk.graal.compiler.annotation.AnnotationValueSupport.ANNOTATIONS_INFO_PARSER;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKEDYNAMIC;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKEINTERFACE;
 import static jdk.graal.compiler.bytecode.Bytecodes.INVOKESPECIAL;
@@ -45,6 +46,7 @@ import org.graalvm.collections.EconomicMap;
 import org.graalvm.collections.Equivalence;
 import org.graalvm.collections.UnmodifiableEconomicMap;
 
+import jdk.graal.compiler.annotation.AnnotationValueSupport;
 import jdk.graal.compiler.bytecode.BytecodeStream;
 import jdk.graal.compiler.core.common.CompilerProfiler;
 import jdk.graal.compiler.debug.DebugContext;
@@ -692,9 +694,6 @@ public final class CompilerInterfaceDeclarations {
                 .setLocalMirrorLocator(CompilerInterfaceDeclarations::findObjectTypeMirror)
                 // getComponentType() is used by the default implementation of isArray().
                 .ensureRecorded(HotSpotResolvedObjectTypeProxy.getComponentTypeMethod, HotSpotResolvedObjectTypeProxy.getComponentTypeInvokable)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getDeclaredAnnotationsMethod, MethodStrategy.Passthrough)
                 .ensureRecorded(HotSpotResolvedObjectTypeProxy.getInstanceFieldsMethod,
                         HotSpotResolvedObjectTypeProxy.getInstanceFieldsInvokable, new Object[]{true}) // For snippet decoding
                 .ensureRecorded(HotSpotResolvedObjectTypeProxy.getStaticFieldsMethod, HotSpotResolvedObjectTypeProxy.getStaticFieldsInvokable) // For snippet decoding
@@ -787,15 +786,16 @@ public final class CompilerInterfaceDeclarations {
                     return null;
                 })
                 .setStrategy(HotSpotResolvedJavaMethodProxy.getParametersMethod, MethodStrategy.Passthrough)
-                .setStrategy(HotSpotResolvedJavaMethodProxy.getParameterAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getDeclaredAnnotationsMethod, MethodStrategy.Passthrough)
-                .setStrategy(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationMethod, MethodStrategy.Passthrough)
-                .setFallbackInvocationHandler(CompilationProxyBase.CompilationProxyAnnotatedBase.getAnnotationMethod, (proxy, method, args, metaAccess) -> {
-                    // The HostInliningPhase can query Truffle-related annotations during replay on jargraal. It is safe to return null.
+                .setStrategy(HotSpotResolvedJavaMethodProxy.getGenericParameterTypesMethod, MethodStrategy.Passthrough)
+                .setStrategy(HotSpotResolvedJavaMethodProxy.getDeclaredAnnotationInfoMethod, MethodStrategy.Passthrough)
+                .setFallbackInvocationHandler(HotSpotResolvedJavaMethodProxy.getDeclaredAnnotationInfoMethod, (proxy, method, args, metaAccess) -> {
+                    // The HostInliningPhase can query Truffle-related annotations during replay on jargraal.
+                    Object function = args[0];
+                    if (function == ANNOTATIONS_INFO_PARSER) {
+                        return AnnotationValueSupport.ParsedDeclaredAnnotationValues.NONE;
+                    }
                     return null;
                 })
-                .setStrategy(HotSpotResolvedJavaMethodProxy.getGenericParameterTypesMethod, MethodStrategy.Passthrough)
                 .setDefaultValueStrategy(HotSpotResolvedJavaMethodProxy.hasCodeAtLevelMethod, false)
                 .setDefaultValue(HotSpotResolvedJavaMethodProxy.isInVirtualMethodTableMethod, false)
                 .setDefaultValue(HotSpotResolvedJavaMethodProxy.intrinsicIdMethod, 0)
@@ -807,7 +807,8 @@ public final class CompilerInterfaceDeclarations {
                     ResolvedJavaType holder = method.getDeclaringClass();
                     if (holder.isHidden()) {
                         ConstantPool constantPool = method.getConstantPool();
-                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getDeclaredConstructorsMethod, HotSpotResolvedObjectTypeProxy.getDeclaredConstructorsInvokable, null));
+                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.isLinkedMethod, HotSpotResolvedJavaTypeProxy.isLinkedInvokable, null));
+                        calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getDeclaredConstructorsBooleanMethod, HotSpotResolvedObjectTypeProxy.getDeclaredConstructorsBooleanInvokable, new Object[]{false}));
                         calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getInterfacesMethod, HotSpotResolvedObjectTypeProxy.getInterfacesInvokable, null));
                         calls.add(new MethodCallToRecord(holder, HotSpotResolvedObjectTypeProxy.getDeclaredMethodsBooleanMethod, HotSpotResolvedObjectTypeProxy.getDeclaredMethodsBooleanInvokable, new Object[]{false}));
                         calls.add(new MethodCallToRecord(method, HotSpotResolvedJavaMethodProxy.getConstantPoolMethod, HotSpotResolvedJavaMethodProxy.getConstantPoolInvokable, null));

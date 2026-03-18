@@ -31,14 +31,15 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
+import org.graalvm.collections.EconomicSet;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.dynamicaccess.AccessCondition;
 import org.graalvm.nativeimage.impl.TypeReachabilityCondition;
 
 import com.oracle.svm.core.hub.DynamicHub;
-import com.oracle.svm.core.util.VMError;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.VMError;
 
 /**
  * The dynamic access metadata for some value that can be accessed at run time. Contains a set of
@@ -58,7 +59,6 @@ public class RuntimeDynamicAccessMetadata {
     private boolean satisfied;
     private volatile boolean preserved;
 
-    @Platforms(Platform.HOSTED_ONLY.class)
     public static RuntimeDynamicAccessMetadata emptySet(boolean preserved) {
         return new RuntimeDynamicAccessMetadata(new Object[0], preserved);
     }
@@ -84,17 +84,17 @@ public class RuntimeDynamicAccessMetadata {
         }
 
         Object newRuntimeCondition = createRuntimeCondition(cnd);
-        Set<Object> existingConditions = conditions == null ? new HashSet<>() : new HashSet<>(Arrays.asList(conditions));
+        Set<Object> existingConditions = conditions == null ? new HashSet<>() : new HashSet<>(Arrays.asList(conditions)); // noEconomicSet(temp)
         existingConditions.add(newRuntimeCondition);
         setConditions(existingConditions.toArray());
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
-    public Set<Class<?>> getTypesForEncoding() {
+    public EconomicSet<Class<?>> getTypesForEncoding() {
         if (conditions == null) {
-            return Set.of();
+            return EconomicSet.emptySet();
         } else {
-            Set<Class<?>> types = new HashSet<>();
+            EconomicSet<Class<?>> types = EconomicSet.create();
             for (Object condition : conditions) {
                 types.addAll(getTypesForEncoding(condition));
             }
@@ -144,6 +144,13 @@ public class RuntimeDynamicAccessMetadata {
         }
 
         return result;
+    }
+
+    /*
+     * Used in snippets, returns true only if the condition was already satisfied beforehand.
+     */
+    public final boolean fastPathSatisfied() {
+        return satisfied;
     }
 
     public boolean isPreserved() {

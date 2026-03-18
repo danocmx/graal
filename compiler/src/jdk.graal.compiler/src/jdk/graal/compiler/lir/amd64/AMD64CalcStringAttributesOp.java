@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -190,6 +190,8 @@ public final class AMD64CalcStringAttributesOp extends AMD64ComplexVectorOp {
 
     @Override
     public void emitCode(CompilationResultBuilder crb, AMD64MacroAssembler asm) {
+        AMD64Assembler.AMD64SIMDInstructionEncoding oldEncoding = asm.setTemporaryAvxEncoding(AMD64Assembler.AMD64SIMDInstructionEncoding.VEX);
+
         Register arr = asRegister(array);
         Register off = asRegister(offset);
         Register len = asRegister(length);
@@ -220,6 +222,8 @@ public final class AMD64CalcStringAttributesOp extends AMD64ComplexVectorOp {
             default:
                 throw GraalError.shouldNotReachHereUnexpectedValue(encoding); // ExcludeFromJacocoGeneratedReport
         }
+
+        asm.resetAvxEncoding(oldEncoding);
     }
 
     private void emitLatin1(CompilationResultBuilder crb, AMD64MacroAssembler asm, Register arr, Register len, Register lengthTail, Register ret, Register vecMask) {
@@ -532,7 +536,7 @@ public final class AMD64CalcStringAttributesOp extends AMD64ComplexVectorOp {
      * One Instruction Per Byte</a> by John Keiser and Daniel Lemire, and the author's
      * implementation in <a href=
      * "https://github.com/simdjson/simdjson/blob/d996ffc49423cee75922c30432323288c34f3c04/src/generic/stage1/utf8_lookup4_algorithm.h">
-     * the simdjson library</a>. Follow-up changes made sure this is compatible with simdjson 3.6.4.
+     * the simdjson library</a>. Follow-up changes made sure this is compatible with simdjson 4.3.1.
      *
      * @see <a href="https://github.com/simdjson/simdjson">https://github.com/simdjson/simdjson</a>
      * @see <a href="https://lemire.me/blog/2020/10/20/ridiculously-fast-unicode-utf-8-validation/">

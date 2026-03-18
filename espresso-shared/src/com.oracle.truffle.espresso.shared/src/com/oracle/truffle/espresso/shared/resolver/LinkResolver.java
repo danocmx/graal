@@ -28,6 +28,7 @@ import com.oracle.truffle.espresso.classfile.descriptors.Name;
 import com.oracle.truffle.espresso.classfile.descriptors.Signature;
 import com.oracle.truffle.espresso.classfile.descriptors.Symbol;
 import com.oracle.truffle.espresso.classfile.descriptors.Type;
+import com.oracle.truffle.espresso.shared.lookup.LookupSuccessInvocationFailure;
 import com.oracle.truffle.espresso.shared.meta.ErrorType;
 import com.oracle.truffle.espresso.shared.meta.FieldAccess;
 import com.oracle.truffle.espresso.shared.meta.MethodAccess;
@@ -171,7 +172,7 @@ public final class LinkResolver {
                     R runtime, C accessingKlass,
                     Symbol<Name> name, Symbol<Signature> signature, C symbolicHolder,
                     boolean interfaceLookup,
-                    boolean accessCheck, boolean loadingConstraints) {
+                    boolean accessCheck, boolean loadingConstraints) throws LookupSuccessInvocationFailure {
         return resolveMethodSymbolImpl(runtime, accessingKlass, name, signature, symbolicHolder, interfaceLookup, accessCheck, loadingConstraints, true);
     }
 
@@ -196,9 +197,11 @@ public final class LinkResolver {
                     R runtime, C accessingKlass,
                     Symbol<Name> name, Symbol<Signature> signature, C symbolicHolder,
                     boolean interfaceLookup,
-                    boolean accessCheck, boolean loadingConstraints) {
+                    boolean accessCheck, boolean loadingConstraints) throws LookupSuccessInvocationFailure {
         try {
             return resolveMethodSymbolImpl(runtime, accessingKlass, name, signature, symbolicHolder, interfaceLookup, accessCheck, loadingConstraints, false);
+        } catch (LookupSuccessInvocationFailure e) {
+            throw e;
         } catch (Throwable e) {
             if (runtime.getErrorType(e) != null) {
                 throw runtime.fatal(e, "No exception was expected");
@@ -391,7 +394,7 @@ public final class LinkResolver {
     private static <R extends RuntimeAccess<C, M, F>, C extends TypeAccess<C, M, F>, M extends MethodAccess<C, M, F>, F extends FieldAccess<C, M, F>> M resolveMethodSymbolImpl(R runtime,
                     C accessingKlass, Symbol<Name> name,
                     Symbol<Signature> signature, C symbolicHolder,
-                    boolean interfaceLookup, boolean accessCheck, boolean loadingConstraints, boolean throwExceptions) {
+                    boolean interfaceLookup, boolean accessCheck, boolean loadingConstraints, boolean throwExceptions) throws LookupSuccessInvocationFailure {
         M resolved;
         if (interfaceLookup != symbolicHolder.isInterface()) {
             if (throwExceptions) {
@@ -460,6 +463,7 @@ public final class LinkResolver {
                 callKind = CallKind.STATIC;
                 break;
             case Interface:
+                assert resolved.getDeclaringClass().isInterface() || resolved.getDeclaringClass().isJavaLangObject() : "Should have been a ClassFormatError.";
                 // Otherwise, if the resolved method is static or (jdk8 or earlier) private, the
                 // invokeinterface instruction throws an IncompatibleClassChangeError.
                 if (resolved.isStatic() ||
@@ -472,15 +476,27 @@ public final class LinkResolver {
                     }
                     return null;
                 }
-                if (resolved.isPrivate()) {
+                if (resolved.isFinalFlagSet() || resolved.isPrivate()) {
                     assert runtime.getJavaVersion().java9OrLater() : "Should have thrown in previous check.";
-                    // Interface private methods do not appear in itables.
+                    /*
+                     * The final flag check handles resolving to final j.l.Object methods (eg:
+                     * getClass()).
+                     *
+                     * Note: checking final flag of resolved's declaring class is not needed. In
+                     * this branch, it may only be either an interface (which can not be final) or
+                     * j.l.Object, which is not final.
+                     */
                     callKind = CallKind.DIRECT;
                 } else if (resolved.getDeclaringClass().isJavaLangObject()) {
                     // Can happen in old classfiles that calls j.l.Object methods on interfaces.
                     callKind = CallKind.VTABLE_LOOKUP;
-                } else {
+                } else if (resolved.requiresInterfaceDispatch(symbolicHolder)) {
                     callKind = CallKind.ITABLE_LOOKUP;
+                } else {
+                    // Some runtimes may optimize interface methods known to have a unique concrete
+                    // implementation. Such example may include sealed interfaces with a single
+                    // non-interface permitted subclass.
+                    callKind = CallKind.VTABLE_LOOKUP;
                 }
                 break;
             case Virtual:
@@ -497,13 +513,13 @@ public final class LinkResolver {
                 }
                 if (resolved.isFinalFlagSet() || resolved.getDeclaringClass().isFinalFlagSet() || resolved.isPrivate()) {
                     callKind = CallKind.DIRECT;
-                } else if (resolved.hasVTableIndex()) {
-                    callKind = CallKind.VTABLE_LOOKUP;
-                } else {
+                } else if (resolved.requiresInterfaceDispatch(symbolicHolder)) {
                     // This case can only happen if implicit interface methods are not added to the
                     // vtables.
                     assert resolved.getDeclaringClass().isInterface();
                     callKind = CallKind.ITABLE_LOOKUP;
+                } else {
+                    callKind = CallKind.VTABLE_LOOKUP;
                 }
                 break;
             case Special:
@@ -552,7 +568,18 @@ public final class LinkResolver {
                                     currentKlass.getSuperClass() != null &&
                                     symbolicHolder != currentKlass.getSuperClass() &&
                                     symbolicHolder.isAssignableFrom(currentKlass)) {
-                        resolved = currentKlass.getSuperClass().lookupInstanceMethod(resolved.getSymbolicName(), resolved.getSymbolicSignature());
+                        try {
+                            resolved = currentKlass.getSuperClass().lookupInstanceMethod(resolved.getSymbolicName(), resolved.getSymbolicSignature());
+                        } catch (LookupSuccessInvocationFailure e) {
+                            if (throwExceptions) {
+                                throw runtime.throwError(ErrorType.IncompatibleClassChangeError,
+                                                "Unable to find a unique non-abstract maximally-specific instance method for an INVOKESPECIAL call-site: '%s.%s%s'",
+                                                resolved.getDeclaringClass().getJavaName(),
+                                                resolved.getSymbolicName(),
+                                                resolved.getSymbolicSignature());
+                            }
+                            return null;
+                        }
                     }
                 }
                 callKind = CallKind.DIRECT;

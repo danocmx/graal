@@ -20,7 +20,7 @@
       ["zip", "-r", "javadoc.zip", "javadoc"],
       ["cd", "../compiler"],
       ["mx", "build"],
-      ["mx", "javadoc", "--projects", "jdk.graal.compiler", "--packages", "jdk.graal.compiler.graphio,org.graalvm.word,org.graalvm.collections,com.oracle.truffle.compiler,org.graalvm.nativeimage,com.oracle.svm.core.annotate"],
+      ["mx", "javadoc", "--projects", "jdk.graal.compiler", "--packages", "jdk.graal.compiler.graphio,jdk.graal.compiler.options,org.graalvm.word,org.graalvm.collections,com.oracle.truffle.compiler,org.graalvm.nativeimage,com.oracle.svm.core.annotate"],
       ["cd", "src/jdk.graal.compiler/"],
       ["zip", "-r", "../../graphio-javadoc.zip", "javadoc"],
       ["cd", "../../.."],
@@ -59,7 +59,7 @@
   },
 
   local all_builds = [
-    common.post_merge + linux_amd64 + common.labsjdkLatest + javadoc_publisher,
+    common.daily + linux_amd64 + common.labsjdkLatest + javadoc_publisher,
   ],
   // adds a "defined_in" field to all builds mentioning the location of this current file
   builds:: utils.add_defined_in(all_builds, std.thisFile),

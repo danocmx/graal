@@ -28,7 +28,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import com.oracle.svm.core.annotate.Inject;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.hosted.annotation.AnnotationWrapper;
 import com.oracle.svm.util.AnnotatedWrapper;
 import com.oracle.svm.util.OriginalClassProvider;
@@ -336,12 +336,6 @@ public class InjectedFieldsType implements ResolvedJavaType, OriginalClassProvid
     @Override
     public ResolvedJavaType lookupType(UnresolvedJavaType unresolvedJavaType, boolean resolve) {
         return original.lookupType(unresolvedJavaType, resolve);
-    }
-
-    @SuppressWarnings("deprecation")
-    @Override
-    public ResolvedJavaType getHostClass() {
-        return original.getHostClass();
     }
 
     @Override

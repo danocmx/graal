@@ -1,7 +1,7 @@
 suite = {
     "name": "vm",
     "version" : "25.1.0",
-    "mxversion": "7.55.2",
+    "mxversion": "7.67.0",
     "release" : False,
     "groupId" : "org.graalvm",
 
@@ -17,6 +17,7 @@ suite = {
       "read" : "https://github.com/oracle/graal.git",
       "write" : "git@github.com:oracle/graal.git",
     },
+    "capture_suite_commit_info": False,
     "defaultLicense" : "GPLv2-CPE",
     "imports": {
         "suites": [
@@ -33,7 +34,7 @@ suite = {
                 "name": "graal-nodejs",
                 "subdir": True,
                 "dynamic": True,
-                "version": "8f53dab88f4b57c65e098f47c5c6d9b98a8c01b1",
+                "version": "bba93936cec349798701943914ce7e2ac6dcbab7",
                 "urls" : [
                     {"url" : "https://github.com/graalvm/graaljs.git", "kind" : "git"},
                 ]
@@ -42,17 +43,9 @@ suite = {
                 "name": "graal-js",
                 "subdir": True,
                 "dynamic": True,
-                "version": "8f53dab88f4b57c65e098f47c5c6d9b98a8c01b1",
+                "version": "bba93936cec349798701943914ce7e2ac6dcbab7",
                 "urls": [
                     {"url": "https://github.com/graalvm/graaljs.git", "kind" : "git"},
-                ]
-            },
-            {
-                "name": "truffleruby",
-                "version": "e278fbe3af5e173582ca925f9658a6a674ffb0bd",
-                "dynamic": True,
-                "urls": [
-                    {"url": "https://github.com/oracle/truffleruby.git", "kind": "git"},
                 ]
             },
             {
@@ -65,7 +58,7 @@ suite = {
             },
             {
                 "name": "graalpython",
-                "version": "4791cf72f1960c24a39b5694247f6167c65aef40",
+                "version": "8ce0f8ad21021283a57e1319f5942ec335bb6b30",
                 "dynamic": True,
                 "urls": [
                     {"url": "https://github.com/graalvm/graalpython.git", "kind": "git"},
@@ -78,6 +71,17 @@ suite = {
                 "urls": [
                     {"url": "https://github.com/graalvm/polybenchmarks.git", "kind": "git"},
                 ]
+            },
+            # dynamic import for the 'barista' bench suite
+            {
+                "name": "barista",
+                "subdir": False,
+                "version": "0.6.5",
+                "foreign": True, # barista is not an mx suite
+                "dynamic": True,
+                "urls": [
+                    {"url": "https://github.com/barista-benchmarks/barista.git", "kind" : "git"},
+                ],
             },
         ]
     },

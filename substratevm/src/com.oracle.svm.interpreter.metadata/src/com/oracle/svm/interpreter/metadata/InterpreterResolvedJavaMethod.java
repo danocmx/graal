@@ -32,6 +32,7 @@ import static com.oracle.svm.espresso.classfile.Constants.ACC_STATIC;
 import static com.oracle.svm.espresso.classfile.Constants.ACC_SYNTHETIC;
 import static com.oracle.svm.espresso.classfile.Constants.ACC_VARARGS;
 import static com.oracle.svm.espresso.classfile.Constants.JVM_RECOGNIZED_METHOD_MODIFIERS;
+import static com.oracle.svm.shared.Uninterruptible.CALLED_FROM_UNINTERRUPTIBLE_CODE;
 import static com.oracle.svm.interpreter.metadata.Bytecodes.BREAKPOINT;
 import static com.oracle.svm.interpreter.metadata.CremaMethodAccess.toJVMCI;
 
@@ -41,20 +42,26 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Function;
 
-import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
+import org.graalvm.nativeimage.c.function.CFunctionPointer;
+import org.graalvm.word.impl.Word;
 
+import com.oracle.svm.core.BuildPhaseProvider;
 import com.oracle.svm.core.FunctionPointerHolder;
+import com.oracle.svm.core.SubstrateMetadata;
+import com.oracle.svm.core.graal.code.PreparedSignature;
+import com.oracle.svm.core.heap.UnknownObjectField;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
 import com.oracle.svm.core.hub.crema.CremaSupport;
 import com.oracle.svm.core.hub.registry.SymbolsSupport;
 import com.oracle.svm.core.invoke.ResolvedMember;
 import com.oracle.svm.core.invoke.Target_java_lang_invoke_MemberName;
 import com.oracle.svm.core.meta.MethodPointer;
-import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.espresso.classfile.Constants;
 import com.oracle.svm.espresso.classfile.JavaVersion;
 import com.oracle.svm.espresso.classfile.ParserMethod;
 import com.oracle.svm.espresso.classfile.attributes.CodeAttribute;
@@ -64,11 +71,14 @@ import com.oracle.svm.espresso.classfile.descriptors.ParserSymbols;
 import com.oracle.svm.espresso.classfile.descriptors.Signature;
 import com.oracle.svm.espresso.classfile.descriptors.Symbol;
 import com.oracle.svm.espresso.shared.meta.SignaturePolymorphicIntrinsic;
+import com.oracle.svm.espresso.shared.resolver.CallKind;
 import com.oracle.svm.espresso.shared.vtable.PartialMethod;
+import com.oracle.svm.shared.Uninterruptible;
 import com.oracle.svm.interpreter.metadata.serialization.VisibleForSerialization;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
+import com.oracle.svm.util.AnnotationUtil;
 
-import jdk.graal.compiler.word.Word;
 import jdk.vm.ci.meta.Constant;
 import jdk.vm.ci.meta.ExceptionHandler;
 import jdk.vm.ci.meta.LineNumberTable;
@@ -78,12 +88,13 @@ import jdk.vm.ci.meta.ProfilingInfo;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaType;
 import jdk.vm.ci.meta.SpeculationLog;
+import jdk.vm.ci.meta.annotation.AnnotationsInfo;
 
 /**
  * Encapsulates resolved methods used under close-world assumptions, compiled and interpretable, but
  * also abstract methods for vtable calls.
  */
-public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaMethodAccess, ResolvedMember {
+public class InterpreterResolvedJavaMethod extends InterpreterAnnotated implements ResolvedJavaMethod, CremaMethodAccess, ResolvedMember, SubstrateMetadata {
     @Platforms(Platform.HOSTED_ONLY.class)//
     @SuppressWarnings("unchecked") //
     private static final Class<? extends Annotation> CALLER_SENSITIVE_CLASS = (Class<? extends Annotation>) ReflectionUtil.lookupClass("jdk.internal.reflect.CallerSensitive");
@@ -98,6 +109,24 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     public static final ExceptionHandler[] EMPTY_EXCEPTION_HANDLERS = new ExceptionHandler[0];
 
     public static final int UNKNOWN_METHOD_ID = 0;
+
+    // dispatch index special values
+    /**
+     * This VTable index has not yet been set. Should never be seen at runtime.
+     */
+    public static final int VTBL_UNINITIALIZED = -1;
+    /**
+     * This method has a single implementation and is devirtualized in the image.
+     */
+    public static final int VTBL_ONE_IMPL = -2;
+    /**
+     * This method is never overriden, and is always inlined in the image.
+     */
+    public static final int VTBL_ALWAYS_INLINED = -3;
+    /**
+     * The VTable index is unavailable.
+     */
+    public static final int VTBL_INVALID = -99;
 
     private final Symbol<Signature> signatureSymbol;
 
@@ -132,6 +161,14 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     // Token set by the toggle of method enter/exit events.
     private volatile Object interpreterExecToken;
 
+    // TODO move to crema once GR-71517 is resolved
+    private volatile ResolvedJavaMethod ristrettoMethod;
+    private static final AtomicReferenceFieldUpdater<InterpreterResolvedJavaMethod, ResolvedJavaMethod> RISTRETTO_METHOD_UPDATER = AtomicReferenceFieldUpdater
+                    .newUpdater(InterpreterResolvedJavaMethod.class, ResolvedJavaMethod.class, "ristrettoMethod");
+
+    @UnknownObjectField(availability = BuildPhaseProvider.ReadyForCompilation.class) //
+    private PreparedSignature preparedSignature;
+
     public static class InlinedBy {
         public InterpreterResolvedJavaMethod holder;
         public Set<InterpreterResolvedJavaMethod> inliners;
@@ -144,9 +181,8 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     protected final InlinedBy inlinedBy;
 
-    public static final int VTBL_NO_ENTRY = -1;
-    public static final int VTBL_ONE_IMPL = -2;
-    private int vtableIndex = VTBL_NO_ENTRY;
+    private int vtableIndex = VTBL_UNINITIALIZED;
+
     private InterpreterResolvedJavaMethod oneImplementation;
 
     /* slot in GOT */
@@ -164,14 +200,15 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
      */
     private int methodId;
 
-    @Platforms(Platform.HOSTED_ONLY.class) public boolean needMethodBody;
+    @Platforms(Platform.HOSTED_ONLY.class) //
+    public boolean needMethodBody;
 
     private final SignaturePolymorphicIntrinsic intrinsic;
 
     // Only called during universe building
     @Platforms(Platform.HOSTED_ONLY.class)
     private InterpreterResolvedJavaMethod(ResolvedJavaMethod originalMethod, Symbol<Name> name, int maxLocals, int maxStackSize, int flags,
-                    InterpreterResolvedObjectType declaringClass, InterpreterUnresolvedSignature signature, Symbol<Signature> signatureSymbol,
+                    InterpreterResolvedObjectType declaringClass, InterpreterUnresolvedSignature signature, PreparedSignature preparedSignature, Symbol<Signature> signatureSymbol,
                     byte[] code, ExceptionHandler[] exceptionHandlers, LineNumberTable lineNumberTable, LocalVariableTable localVariableTable,
                     ReferenceConstant<FunctionPointerHolder> nativeEntryPoint, int vtableIndex, int gotOffset, int enterStubOffset, int methodId) {
         this.name = MetadataUtil.requireNonNull(name);
@@ -181,6 +218,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
         this.declaringClass = MetadataUtil.requireNonNull(declaringClass);
         this.signature = MetadataUtil.requireNonNull(signature);
         this.signatureSymbol = MetadataUtil.requireNonNull(signatureSymbol);
+        this.preparedSignature = preparedSignature;
         this.interpretedCode = code;
         this.exceptionHandlers = exceptionHandlers;
         this.lineNumberTable = lineNumberTable;
@@ -198,7 +236,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     // Used at run-time for deserialization
     private InterpreterResolvedJavaMethod(Symbol<Name> name, int maxLocals, int maxStackSize, int flags,
-                    InterpreterResolvedObjectType declaringClass, InterpreterUnresolvedSignature signature, Symbol<Signature> signatureSymbol,
+                    InterpreterResolvedObjectType declaringClass, InterpreterUnresolvedSignature signature, PreparedSignature preparedSignature, Symbol<Signature> signatureSymbol,
                     byte[] code, ExceptionHandler[] exceptionHandlers, LineNumberTable lineNumberTable, LocalVariableTable localVariableTable,
                     ReferenceConstant<FunctionPointerHolder> nativeEntryPoint, int vtableIndex, int gotOffset, int enterStubOffset, int methodId) {
         this.name = MetadataUtil.requireNonNull(name);
@@ -207,6 +245,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
         this.flags = flags;
         this.declaringClass = MetadataUtil.requireNonNull(declaringClass);
         this.signature = MetadataUtil.requireNonNull(signature);
+        this.preparedSignature = preparedSignature;
         this.signatureSymbol = MetadataUtil.requireNonNull(signatureSymbol);
         this.interpretedCode = code;
         this.exceptionHandlers = exceptionHandlers;
@@ -280,12 +319,12 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     @VisibleForSerialization
     public static InterpreterResolvedJavaMethod createForDeserialization(String name, int maxLocals, int maxStackSize, int flags, InterpreterResolvedObjectType declaringClass,
-                    InterpreterUnresolvedSignature signature,
+                    InterpreterUnresolvedSignature signature, PreparedSignature preparedSignature,
                     byte[] code, ExceptionHandler[] exceptionHandlers, LineNumberTable lineNumberTable, LocalVariableTable localVariableTable,
                     ReferenceConstant<FunctionPointerHolder> nativeEntryPoint, int vtableIndex, int gotOffset, int enterStubOffset, int methodId) {
         Symbol<Name> nameSymbol = SymbolsSupport.getNames().getOrCreate(name);
         Symbol<Signature> signatureSymbol = toSymbol(signature);
-        return new InterpreterResolvedJavaMethod(nameSymbol, maxLocals, maxStackSize, flags, declaringClass, signature, signatureSymbol, code,
+        return new InterpreterResolvedJavaMethod(nameSymbol, maxLocals, maxStackSize, flags, declaringClass, signature, preparedSignature, signatureSymbol, code,
                         exceptionHandlers, lineNumberTable, localVariableTable, nativeEntryPoint, vtableIndex, gotOffset, enterStubOffset, methodId);
     }
 
@@ -299,8 +338,35 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
         Symbol<Name> nameSymbol = SymbolsSupport.getNames().getOrCreate(name);
         Symbol<Signature> signatureSymbol = toSymbol(signature);
         int flags = createFlags(modifiers, declaringClass, signatureSymbol, isSubstitutedNative, originalMethod);
-        return new InterpreterResolvedJavaMethod(originalMethod, nameSymbol, maxLocals, maxStackSize, flags, declaringClass, signature, signatureSymbol, code,
+        PreparedSignature preparedSignature = null;
+        return new InterpreterResolvedJavaMethod(originalMethod, nameSymbol, maxLocals, maxStackSize, flags, declaringClass, signature, preparedSignature, signatureSymbol, code,
                         exceptionHandlers, lineNumberTable, localVariableTable, nativeEntryPoint, vtableIndex, gotOffset, enterStubOffset, methodId);
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public ResolvedJavaMethod getRistrettoMethod() {
+        return this.ristrettoMethod;
+    }
+
+    public ResolvedJavaMethod getRistrettoMethod(Function<InterpreterResolvedJavaMethod, ResolvedJavaMethod> ristrettoMethodSupplier) {
+        if (this.ristrettoMethod != null) {
+            return this.ristrettoMethod;
+        }
+        /*
+         * We allow concurrent allocation of a ristretto method per interpreter method. Eventually
+         * however we CAS on the pointer in the interpreter representation, if another thread was
+         * faster return its method.
+         */
+        return getOrSetRistrettoMethod(ristrettoMethodSupplier.apply(this));
+    }
+
+    private ResolvedJavaMethod getOrSetRistrettoMethod(ResolvedJavaMethod newRistrettoMethod) {
+        if (RISTRETTO_METHOD_UPDATER.compareAndSet(this, null, newRistrettoMethod)) {
+            return newRistrettoMethod;
+        }
+        var method = this.ristrettoMethod;
+        assert method != null : "If CAS for null fails must have written a method already";
+        return method;
     }
 
     private static Symbol<Signature> toSymbol(InterpreterUnresolvedSignature jvmciSignature) {
@@ -326,7 +392,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
         if (isSubstitutedNative) {
             newModifiers |= ACC_SUBSTITUTED_NATIVE;
         }
-        if (AnnotationAccess.isAnnotationPresent(originalMethod, CALLER_SENSITIVE_CLASS)) {
+        if (AnnotationUtil.isAnnotationPresent(originalMethod, CALLER_SENSITIVE_CLASS)) {
             newModifiers |= ACC_CALLER_SENSITIVE;
         }
         return newModifiers;
@@ -343,7 +409,19 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     }
 
     @Override
+    public InterpreterResolvedJavaMethod findSignaturePolymorphicIntrinsic(Symbol<Signature> methodSignature) {
+        if (!RuntimeClassLoading.isSupported()) {
+            throw VMError.shouldNotReachHere("Signature polymorphic method handling is unsupported without runtime class loading enabled.");
+        }
+
+        return (InterpreterResolvedJavaMethod) CremaSupport.singleton().findMethodHandleIntrinsic(this, methodSignature);
+    }
+
+    @Override
     public final InterpreterResolvedJavaMethod createSignaturePolymorphicIntrinsic(Symbol<Signature> newSignature) {
+        if (!RuntimeClassLoading.isSupported()) {
+            throw VMError.shouldNotReachHere("Unable to create signature polymorphic intrinsic when runtime class loading is disabled.");
+        }
         SignaturePolymorphicIntrinsic iid = SignaturePolymorphicIntrinsic.getId(this);
         assert iid != null;
         assert intrinsic == null;
@@ -359,7 +437,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
         }
         assert Modifier.isNative(newModifiers);
         InterpreterUnresolvedSignature jvmciSignature = CremaMethodAccess.toJVMCI(newSignature, SymbolsSupport.getTypes());
-        return new InterpreterResolvedJavaMethod(name, jvmciSignature.getParameterCount(true), newModifiers, declaringClass, jvmciSignature, newSignature,
+        return new InterpreterResolvedJavaMethod(name, jvmciSignature.slotsForParameters(true), newModifiers, declaringClass, jvmciSignature, newSignature,
                         vtableIndex, gotOffset, enterStubOffset, methodId, iid);
     }
 
@@ -369,6 +447,10 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     public final SignaturePolymorphicIntrinsic getSignaturePolymorphicIntrinsic() {
         return intrinsic;
+    }
+
+    public final boolean isSignaturePolymorphicIntrinsic() {
+        return getSignaturePolymorphicIntrinsic() != null;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -461,11 +543,13 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     }
 
     @Override
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public final int getMaxLocals() {
         return maxLocals;
     }
 
     @Override
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
     public final int getMaxStackSize() {
         return maxStackSize;
     }
@@ -518,7 +602,8 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     @Override
     public final String toString() {
-        return "InterpreterResolvedJavaMethod<holder=" + getDeclaringClass().getName() + " name=" + getName() + " descriptor=" + getSignature().toMethodDescriptor() + ">";
+        return "InterpreterResolvedJavaMethod<holder=" + getDeclaringClass().getName() + " name=" + getName() + " descriptor=" + getSignature().toMethodDescriptor() + " dispatchIndex=" +
+                        getVTableIndex() + ">";
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -602,11 +687,11 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
         return nativeEntryPoint != null;
     }
 
-    public final MethodPointer getNativeEntryPoint() {
+    public final CFunctionPointer getNativeEntryPoint() {
         if (nativeEntryPoint == null) {
             return Word.nullPointer();
         }
-        return (MethodPointer) nativeEntryPoint.getReferent().functionPointer;
+        return nativeEntryPoint.getReferent().functionPointer;
     }
 
     public final ReferenceConstant<FunctionPointerHolder> getNativeEntryPointHolderConstant() {
@@ -635,7 +720,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public final void setVTableIndex(int vtableIndex) {
-        VMError.guarantee(vtableIndex == VTBL_NO_ENTRY || (!isStatic() && !isConstructor()));
+        VMError.guarantee(vtableIndex == VTBL_UNINITIALIZED || (!isStatic() && !isConstructor()));
         if (vtableIndex >= 0) {
             VMError.guarantee(!isFinal());
         }
@@ -643,8 +728,26 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     }
 
     @Override
-    public final boolean hasVTableIndex() {
-        return vtableIndex != VTBL_NO_ENTRY && vtableIndex != VTBL_ONE_IMPL;
+    public final boolean requiresInterfaceDispatch(InterpreterResolvedJavaType holder) {
+        return hasDispatchIndex() && getDeclaringClass().isInterface();
+    }
+
+    public final boolean isDevirtualized() {
+        return VTBL_INVALID < vtableIndex && vtableIndex < VTBL_UNINITIALIZED;
+    }
+
+    public final InterpreterResolvedJavaMethod devirtualizationTarget() {
+        assert isDevirtualized();
+        if (vtableIndex == VTBL_ONE_IMPL) {
+            return getOneImplementation();
+        } else if (vtableIndex == VTBL_ALWAYS_INLINED) {
+            return this;
+        }
+        throw VMError.shouldNotReachHere("Unable to devirtualize.");
+    }
+
+    public final boolean hasDispatchIndex() {
+        return vtableIndex >= 0;
     }
 
     public final void setOneImplementation(InterpreterResolvedJavaMethod oneImplementation) {
@@ -708,9 +811,23 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     @Override
     public final PartialMethod<InterpreterResolvedJavaType, InterpreterResolvedJavaMethod, InterpreterResolvedJavaField> withVTableIndex(int index) {
-        assert vtableIndex == VTBL_NO_ENTRY;
+        assert vtableIndex == VTBL_UNINITIALIZED;
         vtableIndex = index;
         return this;
+    }
+
+    public void setPreparedSignature(PreparedSignature preparedSignature) {
+        this.preparedSignature = preparedSignature;
+    }
+
+    @Uninterruptible(reason = CALLED_FROM_UNINTERRUPTIBLE_CODE, mayBeInlined = true)
+    public PreparedSignature getPreparedSignature() {
+        return preparedSignature;
+    }
+
+    @Override
+    public final boolean canBeStaticallyBound() {
+        return (isFinal() || isPrivate() || isStatic() || getDeclaringClass().isLeaf() || isConstructor()) && isConcrete();
     }
 
     // region Unimplemented methods
@@ -738,11 +855,6 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     @Override
     public final com.oracle.svm.espresso.classfile.ExceptionHandler[] getSymbolicExceptionHandlers() {
         throw VMError.unimplemented("getSymbolicExceptionHandlers");
-    }
-
-    @Override
-    public final Annotation[][] getParameterAnnotations() {
-        throw VMError.intentionallyUnimplemented();
     }
 
     @Override
@@ -781,17 +893,12 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     }
 
     @Override
-    public final <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
+    public AnnotationsInfo getParameterAnnotationInfo() {
         throw VMError.intentionallyUnimplemented();
     }
 
     @Override
-    public final Annotation[] getAnnotations() {
-        throw VMError.intentionallyUnimplemented();
-    }
-
-    @Override
-    public final Annotation[] getDeclaredAnnotations() {
+    public AnnotationsInfo getAnnotationDefaultInfo() {
         throw VMError.intentionallyUnimplemented();
     }
 
@@ -807,7 +914,7 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
 
     @Override
     public final boolean isBridge() {
-        throw VMError.intentionallyUnimplemented();
+        return (Constants.ACC_BRIDGE & getModifiers()) != 0;
     }
 
     @Override
@@ -816,13 +923,9 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
     }
 
     @Override
-    public final boolean canBeStaticallyBound() {
-        throw VMError.intentionallyUnimplemented();
-    }
-
-    @Override
     public final StackTraceElement asStackTraceElement(int bci) {
-        throw VMError.intentionallyUnimplemented();
+        // TODO GR-71255
+        return new StackTraceElement(getDeclaringClass().getName(), getName(), null, bci);
     }
 
     @Override
@@ -856,5 +959,9 @@ public class InterpreterResolvedJavaMethod implements ResolvedJavaMethod, CremaM
             }
         }
         return invoker;
+    }
+
+    public CallKind getCallKind() {
+        return CallKind.getCallKind(this);
     }
 }

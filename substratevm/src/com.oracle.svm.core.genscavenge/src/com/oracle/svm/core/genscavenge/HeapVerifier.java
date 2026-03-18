@@ -30,7 +30,10 @@ import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.word.Pointer;
+import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.impl.Word;
 
+import com.oracle.svm.core.SubstrateDiagnostics;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.genscavenge.AlignedHeapChunk.AlignedHeader;
 import com.oracle.svm.core.genscavenge.StackVerifier.VerifyFrameReferencesVisitor;
@@ -48,10 +51,14 @@ import com.oracle.svm.core.hub.InteriorObjRefWalker;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.metaspace.Metaspace;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.AllAccess;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.SingleLayer;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredInstallationKind.InitialLayerOnly;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 import jdk.graal.compiler.api.replacements.Fold;
-import jdk.graal.compiler.word.Word;
 
+@SingletonTraits(access = AllAccess.class, layeredCallbacks = SingleLayer.class, layeredInstallationKind = InitialLayerOnly.class)
 public class HeapVerifier {
     private static final ObjectVerifier OBJECT_VERIFIER = new ObjectVerifier();
     private static final ObjectReferenceVerifier REFERENCE_VERIFIER = new ObjectReferenceVerifier();
@@ -131,7 +138,7 @@ public class HeapVerifier {
          * After we are done with all other verifications, it is guaranteed that the heap is in a
          * reasonable state. Now, we can verify the remembered sets without having to worry about
          * basic heap consistency.
-         * 
+         *
          * It would be nice to assert that all cards in the image heap and old generation are clean
          * after a garbage collection. For the image heap, it is pretty much impossible to do that
          * as the GC itself dirties the card table. For the old generation, it is also not possible
@@ -203,7 +210,7 @@ public class HeapVerifier {
                 success = false;
             }
 
-            if (aChunk.getShouldSweepInsteadOfCompact()) {
+            if (aChunk.getSweep()) {
                 Log.log().string("Aligned chunk ").zhex(aChunk).string(" is marked for sweeping while this should only be used during collections.").newline();
                 success = false;
             }
@@ -274,7 +281,7 @@ public class HeapVerifier {
             return false;
         }
 
-        if (SerialGCOptions.useCompactingOldGen() && ObjectHeaderImpl.isMarkedHeader(header)) {
+        if (ObjectHeaderImpl.isMarkedHeader(header)) {
             Log.log().string("Object ").zhex(ptr).string(" has a marked header: ").zhex(header).newline();
             return false;
         }
@@ -321,6 +328,11 @@ public class HeapVerifier {
         } else if (space.isOldSpace() || space.isMetaspace()) {
             if (SerialGCOptions.useRememberedSet() && !RememberedSet.get().hasRememberedSet(header)) {
                 Log.log().string("Object ").zhex(ptr).string(" is in ").string(space.getName()).string(" chunk ").zhex(chunk).string(" but does not have a remembered set.").newline();
+                return false;
+            }
+        } else if (space.isYoungSpace()) {
+            if (SerialGCOptions.useRememberedSet() && RememberedSet.get().hasRememberedSet(header)) {
+                Log.log().string("Object ").zhex(ptr).string(" is in ").string(space.getName()).string(" chunk ").zhex(chunk).string(" but has a remembered set.").newline();
                 return false;
             }
         }
@@ -381,7 +393,7 @@ public class HeapVerifier {
         if (ObjectHeaderImpl.isAlignedHeader(header)) {
             AlignedHeader chunk = AlignedHeapChunk.getEnclosingChunkFromObjectPointer(referencedObject);
             if (referencedObject.belowThan(AlignedHeapChunk.getObjectsStart(chunk)) || referencedObject.aboveOrEqual(HeapChunk.getTopPointer(chunk))) {
-                Log.log().string("Object reference ").zhex(reference).string(" points to ").zhex(referencedObject).string(", which is outside the usable part of the corresponding aligned chunk.");
+                Log.log().string("Object reference at ").zhex(reference).string(" points to ").zhex(referencedObject).string(", which is outside the usable part of the corresponding aligned chunk. ");
                 printParent(parentObject);
                 return false;
             }
@@ -389,7 +401,8 @@ public class HeapVerifier {
             assert ObjectHeaderImpl.isUnalignedHeader(header);
             UnalignedHeader chunk = UnalignedHeapChunk.getEnclosingChunkFromObjectPointer(referencedObject);
             if (referencedObject != UnalignedHeapChunk.getObjectStart(chunk)) {
-                Log.log().string("Object reference ").zhex(reference).string(" points to ").zhex(referencedObject).string(", which is outside the usable part of the corresponding unaligned chunk.");
+                Log.log().string("Object reference at ").zhex(reference).string(" points to ").zhex(referencedObject)
+                                .string(", which is outside the usable part of the corresponding unaligned chunk. ");
                 printParent(parentObject);
                 return false;
             }
@@ -400,7 +413,13 @@ public class HeapVerifier {
 
     private static void printParent(Object parentObject) {
         if (parentObject instanceof VerifyFrameReferencesVisitor visitor) {
-            Log.log().string("The invalid reference is on the stack: sp=").zhex(visitor.getSP()).string(", ip=").zhex(visitor.getIP()).newline();
+            Log.log().string("The invalid reference is on the stack:").indent(true);
+            Log.log().string("isolate thread: ").zhex(visitor.getIsolateThread()).newline();
+            Log.log().string("sp=").zhex(visitor.getSP()).newline();
+
+            Log.log().string("ip=").zhex(visitor.getIP()).string(" (");
+            SubstrateDiagnostics.printLocationInfo(Log.log(), (UnsignedWord) visitor.getIP(), true, false);
+            Log.log().string(")").indent(false);
         } else {
             assert parentObject != null;
             Log.log().string("The object that contains the invalid reference is of type ").string(parentObject.getClass().getName()).newline();

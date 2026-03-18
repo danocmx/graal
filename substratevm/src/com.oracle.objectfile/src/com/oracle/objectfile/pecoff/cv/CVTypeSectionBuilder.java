@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2020, 2021, Red Hat Inc. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,6 +23,7 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
 package com.oracle.objectfile.pecoff.cv;
 
 import static com.oracle.objectfile.pecoff.cv.CVTypeConstants.ADDRESS_BITS;
@@ -67,7 +68,6 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -87,6 +87,7 @@ import com.oracle.objectfile.debugentry.StructureTypeEntry;
 import com.oracle.objectfile.debugentry.TypeEntry;
 
 import jdk.graal.compiler.debug.GraalError;
+import org.graalvm.collections.EconomicSet;
 
 class CVTypeSectionBuilder {
 
@@ -115,9 +116,9 @@ class CVTypeSectionBuilder {
          * If we've never seen the class or only defined it as a forward reference, define it now.
          */
         if (typeRecord != null && typeRecord.type == LF_CLASS && !((CVTypeRecord.CVClassRecord) typeRecord).isForwardRef()) {
-            log("buildType() type %s(%s) is known %s", typeEntry.getTypeName(), "typeEntry.typeKind().name()", typeRecord);
+            log("buildType() type %s(%s) is known %s", typeEntry.getTypeName(), typeEntry.getClass().getName(), typeRecord);
         } else {
-            log("buildType() %s %s size=%d - begin", "typeEntry.typeKind().name()", typeEntry.getTypeName(), typeEntry.getSize());
+            log("buildType() %s %s size=%d - begin", typeEntry.getClass().getName(), typeEntry.getTypeName(), typeEntry.getSize());
             switch (typeEntry) {
                 case PrimitiveTypeEntry primitiveTypeEntry -> typeRecord = getPrimitiveTypeEntry(primitiveTypeEntry);
                 case PointerToTypeEntry pointerToTypeEntry -> typeRecord = buildPointerToTypeEntry(pointerToTypeEntry);
@@ -148,7 +149,8 @@ class CVTypeSectionBuilder {
     CVTypeRecord buildFunction(CompiledMethodEntry entry) {
         ClassEntry ownerType = entry.ownerType();
         assert ownerType != null;
-        return buildMemberFunction(ownerType, entry.primary().getMethodEntry());
+        CVTypeRecord.CVTypeMFunctionRecord mFunctionRecord = buildMemberFunction(ownerType, entry.primary().getMethodEntry());
+        return buildMFuncIdRecord(mFunctionRecord, entry.primary().getMethodName());
     }
 
     static class FieldListBuilder {
@@ -273,7 +275,7 @@ class CVTypeSectionBuilder {
 
     private CVTypeRecord buildStructureTypeEntry(final StructureTypeEntry typeEntry) {
 
-        log("buildStructureTypeEntry size=%d kind=%s %s", typeEntry.getSize(), "typeEntry.typeKind().name()", typeEntry.getTypeName());
+        log("buildStructureTypeEntry size=%d kind=%s %s", typeEntry.getSize(), typeEntry.getClass().getName(), typeEntry.getTypeName());
 
         StructureTypeEntry superType = null;
         if (typeEntry instanceof ClassEntry classEntry) {
@@ -305,6 +307,15 @@ class CVTypeSectionBuilder {
             CVTypeRecord.CVBaseMemberRecord btype = new CVTypeRecord.CVBaseMemberRecord(MPROP_PUBLIC, superTypeIndex, 0);
             log("basetype %s", btype);
             fieldListBuilder.addField(btype);
+        }
+
+        if (typeEntry instanceof HeaderTypeEntry headerEntry) {
+            FieldEntry hubField = headerEntry.getHubField();
+            log("field %s attr=(%s) offset=%d size=%d valuetype=%s", hubField.fieldName(),
+                            hubField.getModifiersString(), hubField.getOffset(), hubField.getSize(), hubField.getValueType().getTypeName());
+            CVTypeRecord.FieldRecord fieldRecord = buildField(hubField);
+            log("field %s", fieldRecord);
+            fieldListBuilder.addField(fieldRecord);
         }
 
         /* Only define manifested fields. */
@@ -342,8 +353,8 @@ class CVTypeSectionBuilder {
             log("building methods");
 
             /* first build a list of all overloaded functions */
-            HashSet<String> overloaded = new HashSet<>(methods.size());
-            HashSet<String> allFunctions = new HashSet<>(methods.size());
+            EconomicSet<String> overloaded = EconomicSet.create(methods.size());
+            EconomicSet<String> allFunctions = EconomicSet.create(methods.size());
             methods.forEach(m -> {
                 if (allFunctions.contains(m.getMethodName())) {
                     overloaded.add(m.getMethodName());
@@ -487,6 +498,10 @@ class CVTypeSectionBuilder {
         argListType = addTypeRecord(argListType);
         mFunctionRecord.setArgList(argListType);
         return addTypeRecord(mFunctionRecord);
+    }
+
+    CVTypeRecord buildMFuncIdRecord(CVTypeRecord.CVTypeMFunctionRecord mFunctionRecord, String functionName) {
+        return addTypeRecord(new CVTypeRecord.CVTypeMFuncIdRecord(mFunctionRecord.getClassType(), mFunctionRecord.getSequenceNumber(), functionName));
     }
 
     private <T extends CVTypeRecord> T addTypeRecord(T record) {

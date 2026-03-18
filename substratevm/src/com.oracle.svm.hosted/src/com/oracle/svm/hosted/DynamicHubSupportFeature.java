@@ -37,11 +37,16 @@ import com.oracle.svm.core.hub.DynamicHubSupport;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeCompilationAccessImpl;
 import com.oracle.svm.hosted.heap.ImageHeapObjectAdder;
+import com.oracle.svm.hosted.image.ImageHeapReasonSupport;
 import com.oracle.svm.hosted.image.NativeImageHeap;
 import com.oracle.svm.hosted.meta.HostedUniverse;
-import com.oracle.svm.util.ReflectionUtil;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.ReflectionUtil;
 
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class DynamicHubSupportFeature implements InternalFeature {
     @Override
     public void afterRegistration(AfterRegistrationAccess access) {
@@ -77,6 +82,6 @@ public class DynamicHubSupportFeature implements InternalFeature {
     private static void addReferenceMapEncodingToImageHeap(NativeImageHeap heap, HostedUniverse hUniverse) {
         byte[] referenceMapEncoding = DynamicHubSupport.currentLayer().getReferenceMapEncoding();
         ImageHeapConstant singletonConstant = (ImageHeapConstant) hUniverse.getSnippetReflection().forObject(referenceMapEncoding);
-        heap.addConstant(singletonConstant, false, "Registered as a required heap constant within DynamicHubSupportFeature");
+        heap.addConstant(singletonConstant, false, ImageHeapReasonSupport.singleton().description("Registered as a required heap constant within DynamicHubSupportFeature"));
     }
 }

@@ -29,43 +29,44 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.graalvm.collections.EconomicMap;
+
 import com.oracle.svm.core.feature.AutomaticallyRegisteredImageSingleton;
 import com.oracle.svm.core.imagelayer.BuildingInitialLayerPredicate;
 import com.oracle.svm.core.jdk.LayeredModuleSingleton;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonLoader;
-import com.oracle.svm.core.layeredimagesingleton.ImageSingletonWriter;
-import com.oracle.svm.core.layeredimagesingleton.LayeredPersistFlags;
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredCallbacksSupplier;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTrait;
-import com.oracle.svm.core.traits.SingletonTraitKind;
-import com.oracle.svm.core.traits.SingletonTraits;
 import com.oracle.svm.hosted.imagelayer.CapnProtoAdapters;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerSingletonLoader;
 import com.oracle.svm.hosted.imagelayer.SVMImageLayerWriter;
 import com.oracle.svm.hosted.imagelayer.SharedLayerSnapshotCapnProtoSchemaHolder.ModulePackages;
 import com.oracle.svm.shaded.org.capnproto.StructList;
+import com.oracle.svm.shared.singletons.ImageSingletonLoader;
+import com.oracle.svm.shared.singletons.ImageSingletonWriter;
+import com.oracle.svm.shared.singletons.LayeredPersistFlags;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.LayeredCallbacksSingletonTrait;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonLayeredCallbacksSupplier;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 
 @AutomaticallyRegisteredImageSingleton(value = LayeredModuleSingleton.class, onlyWith = BuildingInitialLayerPredicate.class)
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = HostedLayeredModuleSingleton.LayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = HostedLayeredModuleSingleton.LayeredCallbacks.class)
 public class HostedLayeredModuleSingleton extends LayeredModuleSingleton {
     public HostedLayeredModuleSingleton() {
         super();
     }
 
-    public HostedLayeredModuleSingleton(Map<String, Map<String, Set<String>>> moduleOpenPackages, Map<String, Map<String, Set<String>>> moduleExportedPackages) {
+    public HostedLayeredModuleSingleton(EconomicMap<String, Map<String, Set<String>>> moduleOpenPackages, EconomicMap<String, Map<String, Set<String>>> moduleExportedPackages) {
         super(moduleOpenPackages, moduleExportedPackages);
     }
 
     static class LayeredCallbacks extends SingletonLayeredCallbacksSupplier {
-        private static void persistModulePackages(StructList.Builder<ModulePackages.Builder> modulePackagesBuilder, Map<String, Map<String, Set<String>>> modulePackages) {
+        private static void persistModulePackages(StructList.Builder<ModulePackages.Builder> modulePackagesBuilder, EconomicMap<String, Map<String, Set<String>>> modulePackages) {
             int i = 0;
-            for (var entry : modulePackages.entrySet()) {
+            var it = modulePackages.getEntries();
+            while (it.advance()) {
                 var entryBuilder = modulePackagesBuilder.get(i);
-                entryBuilder.setModuleKey(entry.getKey());
-                Map<String, Set<String>> value = entry.getValue();
+                entryBuilder.setModuleKey(it.getKey());
+                Map<String, Set<String>> value = it.getValue();
                 var packagesBuilder = entryBuilder.initPackages(value.size());
                 int j = 0;
                 for (var packageEntry : value.entrySet()) {
@@ -79,8 +80,8 @@ public class HostedLayeredModuleSingleton extends LayeredModuleSingleton {
         }
 
         @Override
-        public SingletonTrait getLayeredCallbacksTrait() {
-            return new SingletonTrait(SingletonTraitKind.LAYERED_CALLBACKS, new SingletonLayeredCallbacks<HostedLayeredModuleSingleton>() {
+        public LayeredCallbacksSingletonTrait getLayeredCallbacksTrait() {
+            return new LayeredCallbacksSingletonTrait(new SingletonLayeredCallbacks<HostedLayeredModuleSingleton>() {
 
                 @Override
                 public LayeredPersistFlags doPersist(ImageSingletonWriter writer, HostedLayeredModuleSingleton singleton) {
@@ -100,8 +101,8 @@ public class HostedLayeredModuleSingleton extends LayeredModuleSingleton {
     }
 
     static class SingletonInstantiator implements SingletonLayeredCallbacks.LayeredSingletonInstantiator<HostedLayeredModuleSingleton> {
-        private static Map<String, Map<String, Set<String>>> getModulePackages(StructList.Reader<ModulePackages.Reader> modulePackagesReader) {
-            Map<String, Map<String, Set<String>>> modulePackages = new HashMap<>();
+        private static EconomicMap<String, Map<String, Set<String>>> getModulePackages(StructList.Reader<ModulePackages.Reader> modulePackagesReader) {
+            EconomicMap<String, Map<String, Set<String>>> modulePackages = EconomicMap.create();
             for (int i = 0; i < modulePackagesReader.size(); ++i) {
                 var entryReader = modulePackagesReader.get(i);
                 var packagesReader = entryReader.getPackages();
@@ -121,8 +122,8 @@ public class HostedLayeredModuleSingleton extends LayeredModuleSingleton {
             SVMImageLayerSingletonLoader.ImageSingletonLoaderImpl loaderImpl = (SVMImageLayerSingletonLoader.ImageSingletonLoaderImpl) loader;
             var reader = loaderImpl.getSnapshotReader().getLayeredModule();
 
-            Map<String, Map<String, Set<String>>> moduleOpenPackages = getModulePackages(reader.getOpenModulePackages());
-            Map<String, Map<String, Set<String>>> moduleExportedPackages = getModulePackages(reader.getExportedModulePackages());
+            EconomicMap<String, Map<String, Set<String>>> moduleOpenPackages = getModulePackages(reader.getOpenModulePackages());
+            EconomicMap<String, Map<String, Set<String>>> moduleExportedPackages = getModulePackages(reader.getExportedModulePackages());
 
             return new HostedLayeredModuleSingleton(moduleOpenPackages, moduleExportedPackages);
         }

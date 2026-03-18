@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -212,9 +212,9 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
             receiverNativePeer = "nativePeer";
             nonReceiverParameterStart = 1;
         } else {
-            receiver = PEER_FIELD;
+            receiver = "this";
             receiverCastStatement = null;
-            receiverNativePeer = receiver;
+            receiverNativePeer = PEER_FIELD;
             nonReceiverParameterStart = 0;
         }
         CharSequence nativeIsolateVar = "nativeIsolate";
@@ -270,6 +270,7 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
                 builder.line(receiverCastStatement.build());
             }
             builder.line(getNativeIsolate.build());
+            generateIsolateDeathHandlerBlockStart(builder, methodData);
             builder.line(enterScope.build());
             builder.line("try {");
             builder.indent();
@@ -286,7 +287,7 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
                 generatePostMarshallParameters(builder, binaryMarshalledParameters, nativeIsolateVar, marshalledParametersOutput, preUnmarshallResult.binaryInput, resFieldName, hasOutParameters);
             }
             builder.dedent();
-            generateHSToNativeStartPointExceptionHandlers(builder, nativeIsolateVar, scopeVarName);
+            generateHSToNativeStartPointExceptionHandlers(builder, methodData, receiver, nativeIsolateVar, scopeVarName);
             builder.dedent();
             builder.line("}");
             builder.lineStart("return ").write(resFieldName).lineEnd(";");
@@ -295,6 +296,7 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
                 builder.line(receiverCastStatement.build());
             }
             builder.line(getNativeIsolate.build());
+            generateIsolateDeathHandlerBlockStart(builder, methodData);
             builder.line(enterScope.build());
             builder.line("try {");
             builder.indent();
@@ -342,13 +344,14 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
                 }
             }
             builder.dedent();
-            generateHSToNativeStartPointExceptionHandlers(builder, nativeIsolateVar, scopeVarName);
+            generateHSToNativeStartPointExceptionHandlers(builder, methodData, receiver, nativeIsolateVar, scopeVarName);
         }
         builder.dedent();
         builder.line("}");
     }
 
-    private void generateHSToNativeStartPointExceptionHandlers(CodeBuilder builder, CharSequence nativeIsolateVar, CharSequence scopeVarName) {
+    private void generateHSToNativeStartPointExceptionHandlers(CodeBuilder builder, MethodData methodData, CharSequence receiverVar,
+                    CharSequence nativeIsolateVar, CharSequence scopeVarName) {
         CharSequence foreignException = "foreignException";
         CharSequence throwUnboxedException = new CodeBuilder(builder).write("throw").space().invoke(foreignException, "throwOriginalException",
                         nativeIsolateVar,
@@ -362,6 +365,7 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
         builder.lineStart().invoke(scopeVarName, "leave").lineEnd(";");
         builder.dedent();
         builder.line("}");
+        generateIsolateDeathHandlerBlockEnd(builder, methodData, receiverVar);
     }
 
     private boolean generatePreMarshallParameters(CodeBuilder builder, List<MarshalledParameter> marshalledParameters, CharSequence marshalledParametersOutput,
@@ -420,7 +424,7 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
     }
 
     private static CharSequence generateStoreResult(CodeBuilder builder, MarshallerSnippet snippets, TypeMirror returnType, CharSequence nativeCall) {
-        CharSequence endPointResultVariable = snippets.storeRawResult(builder, returnType, nativeCall, null);
+        CharSequence endPointResultVariable = snippets.storeRawResult(builder, returnType, nativeCall, null, "endPointResult");
         return endPointResultVariable != null ? endPointResultVariable : nativeCall;
     }
 
@@ -1117,12 +1121,11 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
             }
 
             @Override
-            CharSequence storeRawResult(CodeBuilder currentBuilder, TypeMirror resultType, CharSequence invocationSnippet, CharSequence jniEnvFieldName) {
+            CharSequence storeRawResult(CodeBuilder currentBuilder, TypeMirror resultType, CharSequence invocationSnippet, CharSequence jniEnvFieldName, CharSequence rawResultVariableName) {
                 if (marshallerData.sameDirection) {
-                    CharSequence resultVariable = "endPointResult";
-                    currentBuilder.lineStart().write(endPointMethodProvider.getEntryPointMethodParameterType(marshallerData, resultType)).space().write(resultVariable).write(" = ").write(
+                    currentBuilder.lineStart().write(endPointMethodProvider.getEntryPointMethodParameterType(marshallerData, resultType)).space().write(rawResultVariableName).write(" = ").write(
                                     invocationSnippet).lineEnd(";");
-                    return resultVariable;
+                    return rawResultVariableName;
                 } else {
                     return null;
                 }
@@ -1491,10 +1494,9 @@ final class HotSpotToNativeServiceGenerator extends AbstractNativeServiceGenerat
             }
 
             @Override
-            CharSequence storeRawResult(CodeBuilder currentBuilder, TypeMirror resultType, CharSequence invocationSnippet, CharSequence jniEnvFieldName) {
-                CharSequence resultVariable = "endPointResult";
-                currentBuilder.lineStart().write(types.getArrayType(types.getPrimitiveType(TypeKind.BYTE))).space().write(resultVariable).write(" = ").write(invocationSnippet).lineEnd(";");
-                return resultVariable;
+            CharSequence storeRawResult(CodeBuilder currentBuilder, TypeMirror resultType, CharSequence invocationSnippet, CharSequence jniEnvFieldName, CharSequence rawResultVariableName) {
+                currentBuilder.lineStart().write(types.getArrayType(types.getPrimitiveType(TypeKind.BYTE))).space().write(rawResultVariableName).write(" = ").write(invocationSnippet).lineEnd(";");
+                return rawResultVariableName;
             }
 
             @Override

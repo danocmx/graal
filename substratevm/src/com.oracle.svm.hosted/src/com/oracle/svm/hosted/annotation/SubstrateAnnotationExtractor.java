@@ -27,28 +27,19 @@ package com.oracle.svm.hosted.annotation;
 import java.lang.annotation.Annotation;
 import java.lang.annotation.AnnotationFormatError;
 import java.lang.reflect.AnnotatedElement;
-import java.lang.reflect.Executable;
-import java.lang.reflect.Field;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.RecordComponent;
 import java.util.Objects;
 
 import org.graalvm.nativeimage.AnnotationAccess;
 import org.graalvm.nativeimage.impl.AnnotationExtractor;
 
-import com.oracle.svm.core.traits.BuiltinTraits.BuildtimeAccessOnly;
-import com.oracle.svm.core.traits.BuiltinTraits.NoLayeredCallbacks;
-import com.oracle.svm.core.traits.SingletonLayeredInstallationKind.Independent;
-import com.oracle.svm.core.traits.SingletonTraits;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
 import com.oracle.svm.util.AnnotatedObjectAccess;
-import com.oracle.svm.util.AnnotatedObjectAccessError;
-import com.oracle.svm.util.GraalAccess;
+import com.oracle.svm.util.GuestAccess;
 import com.oracle.svm.util.OriginalClassProvider;
-import com.oracle.svm.util.ReflectionUtil;
 
 import jdk.graal.compiler.annotation.AnnotationValue;
-import jdk.vm.ci.meta.annotation.Annotated;
 
 /**
  * This class wraps all annotation accesses during the Native Image build. It relies on
@@ -60,13 +51,13 @@ import jdk.vm.ci.meta.annotation.Annotated;
  * never be used during Native Image generation because it initializes all annotation classes and
  * their dependencies.
  */
-@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, layeredInstallationKind = Independent.class)
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class)
 public class SubstrateAnnotationExtractor extends AnnotatedObjectAccess implements AnnotationExtractor {
 
     @Override
     public <T extends Annotation> T extractAnnotation(AnnotatedElement element, Class<T> annotationType, boolean declaredOnly) {
         try {
-            return getAnnotation(toAnnotated(element), annotationType, declaredOnly);
+            return getAnnotation(GuestAccess.get().toAnnotated(element), annotationType, declaredOnly);
         } catch (LinkageError | AnnotationFormatError e) {
             /*
              * Returning null essentially means that the element doesn't declare the annotationType,
@@ -81,7 +72,7 @@ public class SubstrateAnnotationExtractor extends AnnotatedObjectAccess implemen
     @Override
     public boolean hasAnnotation(AnnotatedElement element, Class<? extends Annotation> annotationType) {
         try {
-            return hasAnnotation(toAnnotated(element), annotationType);
+            return hasAnnotation(GuestAccess.get().toAnnotated(element), annotationType);
         } catch (LinkageError | AnnotationFormatError e) {
             /*
              * Returning false essentially means that the element doesn't declare the
@@ -93,49 +84,10 @@ public class SubstrateAnnotationExtractor extends AnnotatedObjectAccess implemen
         }
     }
 
-    private static final Method packageGetPackageInfo = ReflectionUtil.lookupMethod(Package.class, "getPackageInfo");
-
-    public static Annotated toAnnotated(AnnotatedElement element) {
-        switch (element) {
-            case null -> {
-                return null;
-            }
-            case Annotated annotated -> {
-                return annotated;
-            }
-            case Class<?> clazz -> {
-                return GraalAccess.lookupType(clazz);
-            }
-            case Executable executable -> {
-                return GraalAccess.lookupMethod(executable);
-            }
-            case Field field -> {
-                return GraalAccess.lookupField(field);
-            }
-            case RecordComponent rc -> {
-                return GraalAccess.lookupRecordComponent(rc);
-            }
-            case Package packageObject -> {
-                try {
-                    return GraalAccess.lookupType((Class<?>) packageGetPackageInfo.invoke(packageObject));
-                } catch (InvocationTargetException e) {
-                    Throwable targetException = e.getTargetException();
-                    if (targetException instanceof LinkageError) {
-                        throw (LinkageError) targetException;
-                    }
-                    throw new AnnotatedObjectAccessError(element, e);
-                } catch (IllegalAccessException e) {
-                    throw new AnnotatedObjectAccessError(element, e);
-                }
-            }
-            default -> throw new AnnotatedObjectAccessError(element, (Throwable) null);
-        }
-    }
-
     @SuppressWarnings("unchecked")
     @Override
     public Class<? extends Annotation>[] getAnnotationTypes(AnnotatedElement element) {
-        return getAnnotationValues(toAnnotated(element), false).values().stream() //
+        return getAnnotationValues(GuestAccess.get().toAnnotated(element), false).values().stream() //
                         .map(AnnotationValue::getAnnotationType) //
                         .map(OriginalClassProvider::getJavaClass) //
                         .filter(Objects::nonNull) //

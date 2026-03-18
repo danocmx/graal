@@ -55,18 +55,22 @@ import com.oracle.svm.core.feature.InternalFeature;
 import com.oracle.svm.core.hub.ClassForNameSupport;
 import com.oracle.svm.core.hub.PredefinedClassesSupport;
 import com.oracle.svm.core.hub.RuntimeClassLoading;
-import com.oracle.svm.core.option.HostedOptionKey;
-import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ExceptionSynthesizer;
 import com.oracle.svm.hosted.FeatureImpl;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.ReachabilityCallbackNode;
 import com.oracle.svm.hosted.substitute.DeletedElementException;
+import com.oracle.svm.shared.option.HostedOptionKey;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.BuildtimeAccessOnly;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.Disallowed;
+import com.oracle.svm.shared.singletons.traits.BuiltinTraits.NoLayeredCallbacks;
+import com.oracle.svm.shared.singletons.traits.SingletonTraits;
+import com.oracle.svm.shared.util.LogUtils;
+import com.oracle.svm.shared.util.ReflectionUtil;
+import com.oracle.svm.shared.util.VMError;
 import com.oracle.svm.util.AnnotationUtil;
-import com.oracle.svm.util.GraalAccess;
-import com.oracle.svm.util.LogUtils;
+import com.oracle.svm.util.GuestAccess;
 import com.oracle.svm.util.OriginalClassProvider;
-import com.oracle.svm.util.ReflectionUtil;
 import com.oracle.svm.util.TypeResult;
 
 import jdk.graal.compiler.nodes.ConstantNode;
@@ -94,6 +98,7 @@ import jdk.vm.ci.meta.annotation.Annotated;
  * graph optimizations.
  */
 @AutomaticallyRegisteredFeature
+@SingletonTraits(access = BuildtimeAccessOnly.class, layeredCallbacks = NoLayeredCallbacks.class, other = Disallowed.class)
 public final class StrictDynamicAccessInferenceFeature implements InternalFeature {
 
     static class Options {
@@ -145,7 +150,7 @@ public final class StrictDynamicAccessInferenceFeature implements InternalFeatur
     public void afterRegistration(AfterRegistrationAccess access) {
         FeatureImpl.AfterRegistrationAccessImpl accessImpl = (FeatureImpl.AfterRegistrationAccessImpl) access;
         applicationClassLoader = accessImpl.getApplicationClassLoader();
-        ConstantExpressionAnalyzer analyzer = new ConstantExpressionAnalyzer(GraalAccess.getOriginalProviders(), applicationClassLoader);
+        ConstantExpressionAnalyzer analyzer = new ConstantExpressionAnalyzer(GuestAccess.get().getProviders(), applicationClassLoader);
         registry = new ConstantExpressionRegistry(analyzer);
         ImageSingletons.add(ConstantExpressionRegistry.class, registry);
     }

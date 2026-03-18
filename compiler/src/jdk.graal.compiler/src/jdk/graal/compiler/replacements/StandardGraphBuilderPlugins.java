@@ -187,6 +187,7 @@ import jdk.graal.compiler.nodes.util.ConstantFoldUtil;
 import jdk.graal.compiler.nodes.util.ConstantReflectionUtil;
 import jdk.graal.compiler.nodes.util.GraphUtil;
 import jdk.graal.compiler.nodes.virtual.EnsureVirtualizedNode;
+import jdk.graal.compiler.options.LibGraalSupport;
 import jdk.graal.compiler.replacements.nodes.AESNode;
 import jdk.graal.compiler.replacements.nodes.AESNode.CryptMode;
 import jdk.graal.compiler.replacements.nodes.ArrayEqualsNode;
@@ -253,7 +254,8 @@ public class StandardGraphBuilderPlugins {
                     InvocationPlugins plugins,
                     boolean useExactMathPlugins,
                     boolean explicitUnsafeNullChecks,
-                    boolean supportsStubBasedPlugins) {
+                    boolean supportsStubBasedPlugins,
+                    boolean enableAesPlugins) {
         registerObjectPlugins(plugins);
         registerClassPlugins(plugins);
         registerMathPlugins(plugins, useExactMathPlugins);
@@ -281,7 +283,9 @@ public class StandardGraphBuilderPlugins {
 
         if (supportsStubBasedPlugins) {
             registerArraysPlugins(plugins);
-            registerAESPlugins(plugins);
+            if (enableAesPlugins) {
+                registerAESPlugins(plugins);
+            }
             registerGHASHPlugin(plugins);
             registerBigIntegerPlugins(plugins);
             registerMessageDigestPlugins(plugins);
@@ -349,30 +353,33 @@ public class StandardGraphBuilderPlugins {
 
     private static void registerStringPlugins(InvocationPlugins plugins, SnippetReflectionProvider snippetReflection, boolean supportsStubBasedPlugins) {
         final Registration r = new Registration(plugins, String.class);
-        r.register(new InvocationPlugin("hashCode", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                String s = asConstantObject(b, String.class, receiver.get(false));
-                if (s != null) {
-                    b.addPush(JavaKind.Int, b.add(ConstantNode.forInt(s.hashCode())));
-                    return true;
+        if (!LibGraalSupport.inLibGraalRuntime()) {
+            // These intrinsics require converting constants to String objects in
+            // the current heap which is not not supported on libgraal.
+            r.register(new InvocationPlugin("hashCode", Receiver.class) {
+                @Override
+                public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
+                    String s = asConstantObject(b, String.class, receiver.get(false));
+                    if (s != null) {
+                        b.addPush(JavaKind.Int, b.add(ConstantNode.forInt(s.hashCode())));
+                        return true;
+                    }
+                    return false;
                 }
-                return false;
-            }
-        });
-        r.register(new InvocationPlugin("intern", Receiver.class) {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
-                String s = asConstantObject(b, String.class, receiver.get(false));
-                if (s != null) {
-                    JavaConstant interned = snippetReflection.forObject(s.intern());
-                    b.addPush(JavaKind.Object, b.add(ConstantNode.forConstant(interned, b.getMetaAccess(), b.getGraph())));
-                    return true;
+            });
+            r.register(new InvocationPlugin("intern", Receiver.class) {
+                @Override
+                public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver) {
+                    String s = asConstantObject(b, String.class, receiver.get(false));
+                    if (s != null) {
+                        JavaConstant interned = snippetReflection.forObject(s.intern());
+                        b.addPush(JavaKind.Object, b.add(ConstantNode.forConstant(interned, b.getMetaAccess(), b.getGraph())));
+                        return true;
+                    }
+                    return false;
                 }
-                return false;
-            }
-        });
-
+            });
+        }
         if (supportsStubBasedPlugins) {
             r.register(new StringEqualsInvocationPlugin());
         }

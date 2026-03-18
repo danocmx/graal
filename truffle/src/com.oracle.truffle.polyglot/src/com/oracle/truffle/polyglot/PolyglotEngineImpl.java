@@ -87,7 +87,7 @@ import java.util.logging.Level;
 
 import org.graalvm.collections.EconomicSet;
 import org.graalvm.collections.Equivalence;
-import org.graalvm.home.HomeFinder;
+import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.options.OptionDescriptor;
 import org.graalvm.options.OptionDescriptors;
 import org.graalvm.polyglot.Context;
@@ -265,6 +265,8 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
     final long engineId;
     final boolean allowExperimentalOptions;
 
+    @CompilationFinal Consumer<PolyglotException> exceptionHandler;
+
     SourceCacheStatisticsListener sourceCacheStatisticsListener; // effectively final
 
     @SuppressWarnings("unchecked")
@@ -274,7 +276,7 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
                     EngineLoggerProvider engineLoggerSupplier, Map<String, String> options,
                     boolean allowExperimentalOptions, boolean boundEngine, boolean preInitialization,
                     MessageTransport messageTransport, LogHandler logHandler,
-                    TruffleLanguage<Object> hostImpl, boolean hostLanguageOnly, AbstractPolyglotHostService polyglotHostService) {
+                    TruffleLanguage<Object> hostImpl, boolean hostLanguageOnly, AbstractPolyglotHostService polyglotHostService, Consumer<PolyglotException> exceptionHandler) {
         this.engineId = ENGINE_COUNTER.incrementAndGet();
         this.apiAccess = impl.getAPIAccess();
         this.sandboxPolicy = sandboxPolicy;
@@ -319,6 +321,7 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
             }
         }
         this.engineLoggerSupplier = engineLoggerSupplier;
+        this.exceptionHandler = exceptionHandler;
         this.engineLogger = initializeEngineLogger(engineLoggerSupplier, logLevels);
         this.engineOptionValues = engineOptions;
 
@@ -505,7 +508,7 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
             return;
         }
         runtimeInitialized = true;
-        if (TruffleOptions.AOT) {
+        if (ImageInfo.inImageRuntimeCode()) {
             // we do not need to trigger runtime in native image
             return;
         }
@@ -568,6 +571,7 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
 
         this.polyglotHostService = prototype.polyglotHostService;
         this.internalResourceRoots = prototype.internalResourceRoots;
+        this.exceptionHandler = prototype.exceptionHandler;
 
         Map<String, LanguageInfo> languageInfos = new LinkedHashMap<>();
         this.hostLanguageOnly = prototype.hostLanguageOnly;
@@ -709,7 +713,8 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
                     boolean newAllowExperimentalOptions,
                     boolean newBoundEngine, LogHandler newLogHandler,
                     TruffleLanguage<?> newHostLanguage,
-                    AbstractPolyglotHostService newPolyglotHostService) {
+                    AbstractPolyglotHostService newPolyglotHostService,
+                    Consumer<PolyglotException> localExceptionHandler) {
         CompilerAsserts.neverPartOfCompilation();
         this.sandboxPolicy = newSandboxPolicy;
         this.out = newOut;
@@ -729,7 +734,7 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
         }
 
         polyglotHostService = newPolyglotHostService;
-
+        this.exceptionHandler = localExceptionHandler;
         /*
          * Store must only go from false to true, and never back. As it is used for
          * isSharingEnabled().
@@ -774,6 +779,12 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
         }
         validateSandbox();
         printDeprecatedOptionsWarning(deprecatedDescriptors);
+
+        long currentTimestamp = System.nanoTime();
+        for (CallTarget loadedCallTarget : getCallTargets()) {
+            RUNTIME.setInitializedTimestamp(loadedCallTarget, currentTimestamp);
+        }
+
         return true;
     }
 
@@ -1249,6 +1260,21 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
             if (fail) {
                 Set<String> languageNames = classToLanguage.keySet();
                 throw PolyglotEngineException.illegalArgument("Cannot find language " + languageClass + " among " + languageNames);
+            }
+        }
+        return foundLanguage;
+    }
+
+    @TruffleBoundary
+    <T extends TruffleLanguage<?>> PolyglotLanguage getLanguage(String languageId, boolean fail) {
+        PolyglotLanguage foundLanguage = idToLanguage.get(languageId);
+        if (foundLanguage == null) {
+            if (HOST_LANGUAGE_ID.equals(languageId)) {
+                return hostLanguage;
+            }
+            if (fail) {
+                Set<String> languageNames = idToLanguage.keySet();
+                throw PolyglotEngineException.illegalArgument("Cannot find language " + languageId + " among " + languageNames);
             }
         }
         return foundLanguage;
@@ -1814,7 +1840,8 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
                     boolean allowExperimentalOptions,
                     Predicate<String> classFilter, Map<String, String> options, Map<String, String[]> arguments, String[] onlyLanguagesArray, Object ioAccess, Object handler,
                     boolean allowCreateProcess, ProcessHandler processHandler, Object environmentAccess, Map<String, String> environment, ZoneId zone, Object limitsImpl,
-                    String currentWorkingDirectory, String tmpDir, ClassLoader hostClassLoader, boolean allowValueSharing, boolean useSystemExit, boolean registerInActiveContexts) {
+                    String currentWorkingDirectory, String tmpDir, ClassLoader hostClassLoader, boolean allowValueSharing, boolean useSystemExit, boolean registerInActiveContexts,
+                    Consumer<PolyglotException> exceptionHandler) {
         PolyglotContextImpl context;
         Context contextAPI;
         boolean replayEvents;
@@ -1826,6 +1853,11 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
                     throw PolyglotEngineException.illegalArgument("Automatically created engines cannot be used to create more than one context. " +
                                     "Use Engine.newBuilder().build() to construct a new engine and pass it using Context.newBuilder().engine(engine).build().");
                 }
+            }
+
+            if (!boundEngine && exceptionHandler != null && exceptionHandler != this.exceptionHandler) {
+                throw PolyglotEngineException.illegalArgument("Contexts with explicit engines must not specify a different exception handler than the engine. " +
+                                "Use Engine.newBuilder().exceptionHandler(...).build() to  configure the exception handler and pass the same handler to the context, or set the context exception handler to null to inherit it from the engine.");
             }
 
             Set<String> allowedLanguages = Collections.emptySet();
@@ -2517,16 +2549,6 @@ final class PolyglotEngineImpl implements com.oracle.truffle.polyglot.PolyglotIm
         }
         if (engineToClose != null) {
             engineToClose.ensureClosed(false, false);
-        }
-    }
-
-    @SuppressWarnings("static-method")
-    String getVersion() {
-        String version = HomeFinder.getInstance().getVersion();
-        if (version.equals("snapshot")) {
-            return "Development Build";
-        } else {
-            return version;
         }
     }
 

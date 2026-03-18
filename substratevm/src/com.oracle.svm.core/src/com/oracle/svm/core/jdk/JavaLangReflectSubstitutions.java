@@ -31,7 +31,7 @@ import java.util.Objects;
 
 import org.graalvm.word.UnsignedWord;
 
-import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.shared.util.SubstrateUtil;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.config.ConfigurationValues;
@@ -41,7 +41,7 @@ import com.oracle.svm.core.metadata.MetadataTracer;
 import com.oracle.svm.core.reflect.MissingReflectionRegistrationUtils;
 import com.oracle.svm.core.snippets.KnownIntrinsics;
 
-import jdk.graal.compiler.word.BarrieredAccess;
+import org.graalvm.word.impl.BarrieredAccess;
 
 @TargetClass(java.lang.reflect.Array.class)
 final class Target_java_lang_reflect_Array {
@@ -416,10 +416,11 @@ final class Target_java_lang_reflect_Array {
         // get the ultimate outer array type
         DynamicHub arrayHub = DynamicHub.fromClass(componentType);
         for (int i = 0; i < dimensions.length; i++) {
-            arrayHub = arrayHub.getArrayHub();
-            if (arrayHub == null) {
+            DynamicHub maybeArrayHub = arrayHub.getOrCreateArrayHub();
+            if (maybeArrayHub == null) {
                 throw MissingReflectionRegistrationUtils.reportArrayInstantiation(componentType, dimensions.length);
             }
+            arrayHub = maybeArrayHub;
         }
 
         return Util_java_lang_reflect_Array.createMultiArrayAtIndex(0, arrayHub, dimensions);
