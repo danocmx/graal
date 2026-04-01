@@ -275,7 +275,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      */
     protected void verifyAllocation(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext context) {
         var instructions = getVerifierInstructions(lir, preallocMap, context);
-        var verifier = new RegAllocVerifier(lir, instructions, getRegisterAllocationConfig(context));
+        var verifier = new RegAllocVerifier(lir, instructions, getRegisterAllocationConfig(context), allocator);
 
         try {
             verifier.run();
