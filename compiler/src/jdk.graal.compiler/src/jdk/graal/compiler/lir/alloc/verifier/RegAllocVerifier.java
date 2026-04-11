@@ -28,6 +28,7 @@ import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
+import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
 
 import java.io.OutputStream;
 import java.util.ArrayDeque;
@@ -72,7 +73,9 @@ public class RegAllocVerifier {
      */
     protected CalleeSaveMap calleeSaveMap;
 
-    public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig) {
+    protected RegisterAllocationPhase allocator;
+
+    public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig, RegisterAllocationPhase allocator) {
         this.lir = lir;
         this.registerAllocationConfig = registerAllocationConfig;
 
@@ -83,6 +86,8 @@ public class RegAllocVerifier {
         this.fromUsageResolverGlobal = new FromUsageResolverGlobal(lir, blockInstructions);
 
         this.calleeSaveMap = new CalleeSaveMap(registerAllocationConfig.getRegisterConfig());
+
+        this.allocator = allocator;
     }
 
     /**
@@ -132,7 +137,7 @@ public class RegAllocVerifier {
     }
 
     protected BlockVerifierState createNewBlockState(BasicBlock<?> block) {
-        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap);
+        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap, allocator, lir.getOptions());
     }
 
     /**
