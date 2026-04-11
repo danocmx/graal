@@ -1192,6 +1192,69 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         }
     }
 
+    class RematerializedPhase extends RAVPhaseWrapper {
+        protected BlockMap<List<RAVInstruction.Base>> getVerifierInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> instrMap, AllocationContext context) {
+            var instructions = super.getVerifierInstructions(lir, instrMap, context);
+
+            for (var blockId : lir.getBlocks()) {
+                var block = lir.getBlockById(blockId);
+                var instructionsForBlock = instructions.get(block);
+
+                var it = instructionsForBlock.listIterator();
+                while (it.hasNext()) {
+                    var instruction = it.next();
+                    if (instruction instanceof RAVInstruction.Op op) {
+                        if ((op.uses.count == 0 && op.alive.count == 0) || op.dests.count == 0) {
+                            continue;
+                        }
+
+                        var destinations = getOutputSet(op);
+                        if (destinations == null) {
+                            continue;
+                        }
+
+                        if (overwritesInput(destinations, op.uses) || overwritesInput(destinations, op.alive)) {
+                            continue;
+                        }
+
+                        // This instruction does not overwrite any of it's inputs so we can safely
+                        // add it for rematerialization test
+                        it.add(new RAVInstruction.UnknownInstruction(op.getLIRInstruction()));
+                    }
+                }
+            }
+
+            return instructions;
+        }
+
+        protected boolean overwritesInput(Set<RAValue> outputs, RAVInstruction.ValueArrayPair inputs) {
+            for (int i = 0; i < inputs.count; i++) {
+                var curr = inputs.curr[i];
+                if (curr == null) {
+                    return true; // We do not want to touch these
+                }
+
+                if (outputs.contains(curr)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        protected Set<RAValue> getOutputSet(RAVInstruction.Op op) {
+            Set<RAValue> destinations = new EconomicHashSet<>();
+            for (int i = 0; i < op.dests.count; i++) {
+                var curr = op.dests.curr[i];
+                if (curr == null) {
+                    return null;
+                }
+
+                destinations.add(curr);
+            }
+            return destinations;
+        }
+    }
+
     @Override
     protected CompilationResult compile(ResolvedJavaMethod installedCodeOwner, StructuredGraph graph, CompilationResult compilationResult, CompilationIdentifier compilationId, OptionValues options) {
         // Test cases won't pass if FailOnFirst is false
@@ -1387,6 +1450,11 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             obj.increment();
         }
         return obj.getA();
+    }
+
+    public static int exprSnippet(int a, int b) {
+        var toRem = (2 * a) + b;
+        return toRem + a + (b * 5);
     }
 
     @Before
@@ -1713,6 +1781,18 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         var vnrException = (ValueNotInRegisterException) exception;
         Assert.assertEquals(vnrException.variable, deleteReferencePhase.variable);
         Assert.assertEquals(vnrException.location, deleteReferencePhase.location);
+    }
+
+    @Test
+    public void testRematerializedExpressions() {
+        phase = new RematerializedPhase();
+
+        var methodName = "exprSnippet";
+        compile(getResolvedJavaMethod(methodName), null);
+        Assert.assertNull(exception);
+
+        compileModified(methodName);
+        Assert.assertNull(exception);
     }
 }
 

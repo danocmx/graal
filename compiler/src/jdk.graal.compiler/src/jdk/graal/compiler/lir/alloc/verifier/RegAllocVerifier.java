@@ -83,6 +83,8 @@ public class RegAllocVerifier {
      */
     protected CalleeSaveMap calleeSaveMap;
 
+    protected RematerializationHandler rematerializationHandler;
+
     public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig) {
         this.lir = lir;
         this.registerAllocationConfig = registerAllocationConfig;
@@ -97,6 +99,7 @@ public class RegAllocVerifier {
         this.constantMaterializationConflictResolver = new ConstantMaterializationConflictResolver(this.synonymMap);
 
         this.calleeSaveMap = new CalleeSaveMap(registerAllocationConfig.getRegisterConfig());
+        this.rematerializationHandler = new RematerializationHandler((ConstantMaterializationConflictResolver) constantMaterializationConflictResolver);
     }
 
     /**
@@ -122,7 +125,13 @@ public class RegAllocVerifier {
 
             // Create new entry state for successor blocks out of current block state
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
-            for (var instr : instructions) {
+            for (int i = 0; i < instructions.size(); i++) {
+                var instr = instructions.get(i);
+                if (instr instanceof RAVInstruction.UnknownInstruction unknown) {
+                    instr = rematerializationHandler.rematerialize(unknown, state);
+                    instructions.set(i, instr);
+                }
+
                 state.update(instr);
             }
 
@@ -229,6 +238,7 @@ public class RegAllocVerifier {
     @SuppressWarnings("try")
     public void run(boolean failOnFirst) {
         this.fromUsageResolverGlobal.resolvePhiFromUsage();
+        this.rematerializationHandler.prepare(lir, blockInstructions);
 
         this.calculateEntryBlocks();
 

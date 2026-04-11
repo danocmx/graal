@@ -535,4 +535,15 @@ public class RAVInstruction {
             return getLocation().getValue().toString() + " = VIRTMOVE " + variableOrConstant.getValue().toString();
         }
     }
+
+    public static class UnknownInstruction extends Base {
+        public UnknownInstruction(LIRInstruction instr) {
+            super(instr);
+        }
+
+        @Override
+        public String toString() {
+            return "UNKNOWN " + lirInstruction;
+        }
+    }
 }
