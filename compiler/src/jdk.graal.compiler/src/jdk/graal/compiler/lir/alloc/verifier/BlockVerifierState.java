@@ -32,7 +32,9 @@ import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.CastValue;
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
+import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
 import jdk.graal.compiler.lir.dfa.LocationMarker;
+import jdk.graal.compiler.options.OptionValues;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.ValueUtil;
 import jdk.vm.ci.meta.AllocatableValue;
@@ -70,15 +72,21 @@ public class BlockVerifierState {
 
     protected CalleeSaveMap calleeSaveMap;
 
+    protected RegisterAllocationPhase allocator;
+
+    protected OptionValues options;
+
     public BlockVerifierState(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig,
                     ConflictResolver constantConflictResolver, VariableSynonymMap synonymMap,
-                    CalleeSaveMap calleeSaveMap) {
+                    CalleeSaveMap calleeSaveMap, RegisterAllocationPhase allocator, OptionValues options) {
         this.values = new AllocationStateMap(block, registerAllocationConfig);
         this.registerAllocationConfig = registerAllocationConfig;
         this.conflictConstantResolver = constantConflictResolver;
         this.synonymMap = synonymMap;
         this.calleeSaveMap = calleeSaveMap;
         this.block = block;
+        this.allocator = allocator;
+        this.options = options;
     }
 
     protected BlockVerifierState(BasicBlock<?> block, BlockVerifierState other) {
@@ -87,6 +95,8 @@ public class BlockVerifierState {
         this.values = new AllocationStateMap(block, other.values);
         this.synonymMap = other.synonymMap;
         this.calleeSaveMap = other.calleeSaveMap;
+        this.allocator = other.allocator;
+        this.options = other.options;
         this.block = block;
     }
 
@@ -389,6 +399,17 @@ public class BlockVerifierState {
                 }
 
                 throw new KindsMismatchException(move, block, move.to, movedValue, false);
+            }
+        }
+
+        if (RegAllocVerifierPhase.Options.CheckNeverSpillConstants.getValue(options)) {
+            if (move instanceof RAVInstruction.Spill spill && allocator.getNeverSpillConstants()) {
+                var sourceState = values.get(spill.from);
+                if (sourceState instanceof ValueAllocationState valueAllocationState) {
+                    if (LIRValueUtil.isConstantValue(valueAllocationState.getValue())) {
+                        throw new SpilledConstantException(valueAllocationState, spill, block);
+                    }
+                }
             }
         }
     }
