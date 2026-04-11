@@ -487,7 +487,7 @@ public class BlockVerifierState {
                         continue;
                     }
 
-                    throw new RAVException(orig + " -> " + curr + " not an object java kind when marked as a reference", op, block);
+                    throw new JavaKindReferenceMismatchException(orig, curr, kind, op, block);
                 } else {
                     if (origLIRKind.isValue() && currLIRKind.isValue()) {
                         // Either not a reference or a derived one - which might not be marked as
@@ -495,7 +495,7 @@ public class BlockVerifierState {
                         continue;
                     }
 
-                    throw new RAVException(orig + " -> " + curr + " is a reference when not marked as an object java kind", op, block);
+                    throw new JavaKindReferenceMismatchException(orig, curr, kind, op, block);
                 }
             }
         }
