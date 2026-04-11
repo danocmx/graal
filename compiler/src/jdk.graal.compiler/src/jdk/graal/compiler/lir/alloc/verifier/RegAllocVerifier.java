@@ -28,6 +28,7 @@ import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
+import jdk.graal.compiler.lir.StandardOp;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
 
 import java.io.OutputStream;
@@ -165,12 +166,45 @@ public class RegAllocVerifier {
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
             var instructions = this.blockInstructions.get(block);
 
+            boolean processedExceptions = false;
+            List<SpilledConstantException> spilledConstantExceptions = new ArrayList<>();
             for (var instr : instructions) {
                 this.constantMaterializationConflictResolver.prepareFromInstr(instr, block);
                 this.synonymMap.prepareFromInstr(instr, block);
 
-                state.check(instr);
+                if (instr instanceof RAVInstruction.Op op && op.isJump()) {
+                    for (SpilledConstantException e : spilledConstantExceptions) {
+                        boolean found = false;
+                        for (int i = 0; i < op.alive.count; i++) {
+                            var curr = op.alive.curr[i];
+                            var allocState = state.values.get(curr);
+
+                            // What if it got changed by the conflict resolver?
+                            if (allocState.equals(e.valueAllocationState)) {
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if (!found) {
+                            throw e;
+                        }
+                    }
+
+                    processedExceptions = true;
+                }
+
+                try {
+                    state.check(instr);
+                } catch (SpilledConstantException e) {
+                    spilledConstantExceptions.add(e);
+                }
+
                 state.update(instr);
+            }
+
+            if (!spilledConstantExceptions.isEmpty() && !processedExceptions) {
+                throw spilledConstantExceptions.getFirst();
             }
 
             if (block.getSuccessorCount() == 0) {

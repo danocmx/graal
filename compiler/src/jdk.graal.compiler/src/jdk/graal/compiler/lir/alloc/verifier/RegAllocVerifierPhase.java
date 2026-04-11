@@ -77,16 +77,6 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         @Option(help = "Collect reference map information to verify", type = OptionType.Debug) public static final OptionKey<Boolean> CollectReferences = new OptionKey<>(true);
 
         @Option(help = "Fail on first verification failure", type = OptionType.Debug) public static final OptionKey<Boolean> RAVFailOnFirst = new OptionKey<>(true);
-
-        /**
-         * There are certain cases, where a constant is rematerialized to be present
-         * in a JUMP, but the successor does not use the variable, instead it is
-         * part of the frame state, and so the allocator decides that it does not
-         * need to be present in a register and spills it to a stack slot, violating
-         * the {@link RegisterAllocationPhase#getNeverSpillConstants() neverSpillConstant}
-         * setting, the way we can check in this verifier.
-         */
-        @Option(help = "Verify neverSpillConstants is respected") public static final OptionKey<Boolean> CheckNeverSpillConstants = new OptionKey<>(false);
     }
 
     /**

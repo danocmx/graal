@@ -402,13 +402,11 @@ public class BlockVerifierState {
             }
         }
 
-        if (RegAllocVerifierPhase.Options.CheckNeverSpillConstants.getValue(options)) {
-            if (move instanceof RAVInstruction.Spill spill && allocator.getNeverSpillConstants()) {
-                var sourceState = values.get(spill.from);
-                if (sourceState instanceof ValueAllocationState valueAllocationState) {
-                    if (LIRValueUtil.isConstantValue(valueAllocationState.getValue())) {
-                        throw new SpilledConstantException(valueAllocationState, spill, block);
-                    }
+        if (move instanceof RAVInstruction.Spill spill && allocator.getNeverSpillConstants()) {
+            var sourceState = values.get(spill.from);
+            if (sourceState instanceof ValueAllocationState valueAllocationState) {
+                if (LIRValueUtil.isConstantValue(valueAllocationState.getValue())) {
+                    throw new SpilledConstantException(valueAllocationState, spill, block);
                 }
             }
         }
