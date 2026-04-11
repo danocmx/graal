@@ -195,6 +195,7 @@ public class FromUsageResolverGlobal {
         var instructions = blockInstructions.get(block);
         for (var instruction : instructions.reversed()) {
             switch (instruction) {
+                case RAVInstruction.ParallelMove move -> handleParallelMove(usage, move);
                 case RAVInstruction.LocationMove move -> handleMove(usage, move.from, move.to);
                 case RAVInstruction.Op op -> {
                     if (op.lirInstruction instanceof StandardOp.LabelOp) {
@@ -426,6 +427,35 @@ public class FromUsageResolverGlobal {
 
             if (location.equals(to)) {
                 updatedVariables.put(variable, from);
+            }
+        }
+
+        usage.locations.putAll(updatedVariables);
+    }
+
+    protected void handleParallelMove(BlockUsage usage, RAVInstruction.ParallelMove move) {
+        Map<RAValue, RAValue> moveMap = new EconomicHashMap<>();
+        var updatedVariables = new EconomicHashMap<RAVariable, RAValue>();
+        for (var entry : usage.locations.entrySet()) {
+            var variable = entry.getKey();
+            var location = entry.getValue();
+
+            for (int i = 0; i < move.getSize(); i++) {
+                var from = move.sources.get(i);
+                var to = move.destinations.get(i);
+
+                if (location.equals(to)) {
+                    if (moveMap.containsKey(to) && !moveMap.get(to).equals(from)) {
+                        // Same destination from different sources, means we cannot
+                        // determine the correct change here, possibly instead of
+                        // throwing an error, we could just use either and catch the
+                        // error in the checking stage
+                        throw new RAVError("Could not resolve further: " + variable + " in " + location + " cannot proceed with " + move);
+                    }
+
+                    moveMap.put(to, from);
+                    updatedVariables.put(variable, from);
+                }
             }
         }
 

@@ -535,4 +535,47 @@ public class RAVInstruction {
             return getLocation().getValue().toString() + " = VIRTMOVE " + variableOrConstant.getValue().toString();
         }
     }
+
+    /**
+     * Parallel move allows us to exchange multiple values at once;
+     * the currently chosen semantics are as follows:
+     * - If a source is also a destination, then its contents get overwritten after the move
+     * - If destination is used twice, then a conflict will occur (as we do not know which value was "faster")
+     */
+    public static class ParallelMove extends Base {
+        public List<RAValue> sources;
+        public List<RAValue> destinations;
+
+        public ParallelMove(List<RAValue> sources, List<RAValue> destinations, LIRInstruction lirInstruction) {
+            super(lirInstruction);
+
+            assert sources.size() == destinations.size();
+
+            this.sources = sources;
+            this.destinations = destinations;
+        }
+
+        public int getSize() {
+            return this.sources.size();
+        }
+
+        @Override
+        public String toString() {
+            StringBuilder result = new StringBuilder("PARALLEL_MOVE {");
+
+            for (int i = 0; i < getSize(); i++) {
+                var source = sources.get(i);
+                var destination = destinations.get(i);
+
+                result.append(source.getValue().toString()).append(" -> ").append(destination.getValue().toString()).append(", ");
+            }
+
+            if (!sources.isEmpty()) {
+                result.setLength(result.length() - 2);
+            }
+
+            result.append("}");
+            return result.toString();
+        }
+    }
 }

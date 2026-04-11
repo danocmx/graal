@@ -33,12 +33,18 @@ import jdk.graal.compiler.lir.CastValue;
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.dfa.LocationMarker;
+import jdk.graal.compiler.util.EconomicHashMap;
+import jdk.graal.compiler.util.EconomicHashSet;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.ValueUtil;
 import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.Value;
 import jdk.vm.ci.meta.ValueKind;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Verification state a block is in, holds a mapping between locations and their allocation states,
@@ -328,6 +334,8 @@ public class BlockVerifierState {
             checkLocationMoveKinds(move);
         } else if (instruction instanceof RAVInstruction.ValueMove move) {
             checkValueMoveKinds(move);
+        } else if (instruction instanceof RAVInstruction.ParallelMove move) {
+            checkParallelMoveKinds(move);
         }
     }
 
@@ -592,6 +600,21 @@ public class BlockVerifierState {
         }
     }
 
+    protected void checkParallelMoveKinds(RAVInstruction.ParallelMove move) {
+        for (int i = 0; i < move.getSize(); i++) {
+            var source = move.sources.get(i);
+            var destination = move.destinations.get(i);
+            var state = values.get(source);
+
+            if (state instanceof ValueAllocationState valueAllocationState) {
+                RAValue movedValue = valueAllocationState.getRAValue();
+                if (!kindsEqual(movedValue, destination)) {
+                    throw new KindsMismatchException(move, block, destination, movedValue, false);
+                }
+            }
+        }
+    }
+
     /**
      * Update the current state based on outputs of this instruction. Setting contents of current
      * location in {@link AllocationStateMap} to the symbol that was present before allocation was
@@ -604,6 +627,7 @@ public class BlockVerifierState {
             case RAVInstruction.Op op -> this.updateWithOp(op);
             case RAVInstruction.ValueMove virtMove -> this.updateWithValueMove(virtMove);
             case RAVInstruction.LocationMove move -> this.updateWithLocationMove(move);
+            case RAVInstruction.ParallelMove move -> this.updateWithParallelMove(move);
             default -> throw GraalError.shouldNotReachHere("Invalid RAV instruction " + instruction);
         }
     }
@@ -857,5 +881,28 @@ public class BlockVerifierState {
         } else {
             this.values.put(valueMove.getLocation(), new ValueAllocationState(valueMove.variableOrConstant, valueMove, block), valueMove);
         }
+    }
+
+    public void updateWithParallelMove(RAVInstruction.ParallelMove move) {
+        Map<RAValue, AllocationState> newStates = new EconomicHashMap<>();
+        for (int i = 0; i < move.getSize(); i++) {
+            // If a source is also a destination, it gets overwritten after the move
+            var source = move.sources.get(i);
+            var destination = move.destinations.get(i);
+            var state = values.get(source);
+
+            if (!newStates.containsKey(destination)) {
+                newStates.put(destination, state);
+            } else {
+                // If there are multiple allocation states put into the same destination,
+                // we cannot be sure which one will be present, so we use the `meet` logic
+                // for merging blocks, this way, if the set is full of Value {v} of
+                // same variable a value state will remain, otherwise conflict will be
+                // created.
+                newStates.put(destination, newStates.get(destination).meet(state, block, block));
+            }
+        }
+
+        values.internalMap.putAll(newStates);
     }
 }
