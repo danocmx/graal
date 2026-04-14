@@ -29,11 +29,13 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
+import jdk.graal.compiler.util.EconomicHashMap;
 
 import java.io.OutputStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 
 /**
@@ -151,13 +153,44 @@ public class RegAllocVerifier {
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
             var instructions = this.blockInstructions.get(block);
 
+            var spilledConstants = new EconomicHashMap<RAValue, SpilledConstantException>();
             for (var instr : instructions) {
-                state.check(instr);
+                try {
+                    state.check(instr);
+                } catch (SpilledConstantException e) {
+                    spilledConstants.put(e.instruction.to, e);
+                }
+
                 state.update(instr);
+            }
+
+            if (!spilledConstants.isEmpty()) {
+                var jump = (RAVInstruction.Op) instructions.getLast();
+
+                processSpilledConstants(jump, spilledConstants);
+                if (!spilledConstants.isEmpty()) {
+                    throw spilledConstants.values().iterator().next();
+                }
             }
 
             if (block.getSuccessorCount() == 0) {
                 state.checkCalleeSavedRegisters();
+            }
+        }
+    }
+
+    protected void processSpilledConstants(RAVInstruction.Op jump, Map<RAValue, SpilledConstantException> spilledConstants) {
+        for (int i = 0; i < jump.alive.count; i++) {
+            var curr = jump.alive.curr[i];
+            var orig = jump.alive.orig[i];
+
+            var exception = spilledConstants.get(curr);
+            if (exception != null && exception.valueAllocationState.getRAValue().equals(orig)) {
+                // We ignore this exception whenever the constant being spilled is also used
+                // in a JUMP instruction later on; sometimes the allocator decides it's okay
+                // to use a stack slot whenever the LABEL output location is not immediately
+                // used.
+                spilledConstants.remove(curr);
             }
         }
     }
@@ -172,12 +205,27 @@ public class RegAllocVerifier {
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
             var instructions = this.blockInstructions.get(block);
 
+            var spilledConstants = new EconomicHashMap<RAValue, SpilledConstantException>();
             for (var instr : instructions) {
                 try {
                     state.check(instr);
                     state.update(instr);
                 } catch (RAVException e) {
+                    if (e instanceof SpilledConstantException spilledConstantException) {
+                        spilledConstants.put(spilledConstantException.valueAllocationState.getRAValue(), spilledConstantException);
+                        continue;
+                    }
+
                     exceptions.add(e);
+                }
+            }
+
+            if (!spilledConstants.isEmpty()) {
+                var jump = (RAVInstruction.Op) instructions.getLast();
+
+                processSpilledConstants(jump, spilledConstants);
+                if (!spilledConstants.isEmpty()) {
+                    exceptions.addAll(spilledConstants.values());
                 }
             }
 

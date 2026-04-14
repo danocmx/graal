@@ -70,7 +70,7 @@ public class BlockVerifierState {
     protected OptionValues options;
 
     public BlockVerifierState(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig,
-                              CalleeSaveMap calleeSaveMap, RegisterAllocationPhase allocator, OptionValues options) {
+                    CalleeSaveMap calleeSaveMap, RegisterAllocationPhase allocator, OptionValues options) {
         this.values = new AllocationStateMap(block, registerAllocationConfig);
         this.registerAllocationConfig = registerAllocationConfig;
         this.calleeSaveMap = calleeSaveMap;
@@ -378,13 +378,11 @@ public class BlockVerifierState {
             }
         }
 
-        if (RegAllocVerifierPhase.Options.CheckNeverSpillConstants.getValue(options)) {
-            if (move instanceof RAVInstruction.Spill spill && allocator.getNeverSpillConstants()) {
-                var sourceState = values.get(spill.from);
-                if (sourceState instanceof ValueAllocationState valueAllocationState) {
-                    if (LIRValueUtil.isConstantValue(valueAllocationState.getValue())) {
-                        throw new SpilledConstantException(valueAllocationState, spill, block);
-                    }
+        if (move instanceof RAVInstruction.Spill spill && allocator.getNeverSpillConstants()) {
+            var sourceState = values.get(spill.from);
+            if (sourceState instanceof ValueAllocationState valueAllocationState) {
+                if (valueAllocationState.getRAValue().isConstant()) {
+                    throw new SpilledConstantException(valueAllocationState, spill, block);
                 }
             }
         }

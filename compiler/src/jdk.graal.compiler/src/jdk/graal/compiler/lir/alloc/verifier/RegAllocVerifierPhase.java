@@ -78,16 +78,6 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         @Option(help = "Collect reference map information to verify", type = OptionType.Debug) public static final OptionKey<Boolean> CollectReferences = new OptionKey<>(true);
 
         @Option(help = "Fail on first verification failure", type = OptionType.Debug) public static final OptionKey<Boolean> RAVFailOnFirst = new OptionKey<>(true);
-
-        /**
-         * There are certain cases, where a constant is rematerialized to be present
-         * in a JUMP, but the successor does not use the variable, instead it is
-         * part of the frame state, and so the allocator decides that it does not
-         * need to be present in a register and spills it to a stack slot, violating
-         * the {@link RegisterAllocationPhase#getNeverSpillConstants() neverSpillConstant}
-         * setting, the way we can check in this verifier.
-         */
-        @Option(help = "Verify neverSpillConstants is respected") public static final OptionKey<Boolean> CheckNeverSpillConstants = new OptionKey<>(false);
     }
 
     /**
@@ -282,21 +272,18 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
     }
 
     /**
-     * Normalizes the values in this input array pair to remove
-     * any variables that can be substituted for constants or
-     * variables that are aliased by different ones.
+     * Normalizes the values in this input array pair to remove any variables that can be
+     * substituted for constants or variables that are aliased by different ones.
      *
      * <p>
-     * We do this to make the internal verifier IR more consistent
-     * because sometimes a constant value can be used as an input,
-     * while at other times it's substituted behind a variable,
-     * which can also re-materialize later.
+     * We do this to make the internal verifier IR more consistent because sometimes a constant
+     * value can be used as an input, while at other times it's substituted behind a variable, which
+     * can also re-materialize later.
      * </p>
      *
      * <p>
-     * As for variable aliasing, sometimes a move is coalesced
-     * but the register allocator, but the mentioned of the
-     * alias variable still remain; we make sure to remove them.
+     * As for variable aliasing, sometimes a move is coalesced but the register allocator, but the
+     * mentioned of the alias variable still remain; we make sure to remove them.
      * </p>
      *
      * @param values Input array pair
@@ -474,7 +461,8 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
                     for (var readdedMove : readdedMoves) {
                         if (readdedMove.variableOrConstant.isVariable() && readdedMove.location.isVariable()) {
-                            // Coalesced variable-to-variable move, remove old references of the output variable
+                            // Coalesced variable-to-variable move, remove old references of the
+                            // output variable
                             sMap.addSynonym(readdedMove.variableOrConstant.asVariable(), readdedMove.location.asVariable());
                         } else {
                             instructionList.add(readdedMove);

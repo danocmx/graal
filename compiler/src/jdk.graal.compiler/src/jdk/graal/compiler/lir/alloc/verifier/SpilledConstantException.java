@@ -28,11 +28,13 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 
 @SuppressWarnings("serial")
 public class SpilledConstantException extends RAVException {
-    ValueAllocationState valueAllocationState;
+    public ValueAllocationState valueAllocationState;
+    public RAVInstruction.Spill instruction;
 
-    public SpilledConstantException(ValueAllocationState valueAllocationState, RAVInstruction.Base instruction, BasicBlock<?> block) {
+    public SpilledConstantException(ValueAllocationState valueAllocationState, RAVInstruction.Spill instruction, BasicBlock<?> block) {
         super("Spilled a constant " + valueAllocationState.getValue(), instruction, block);
 
         this.valueAllocationState = valueAllocationState;
+        this.instruction = instruction;
     }
 }
