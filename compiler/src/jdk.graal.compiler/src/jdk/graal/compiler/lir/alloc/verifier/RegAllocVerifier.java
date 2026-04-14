@@ -68,17 +68,6 @@ public class RegAllocVerifier {
     protected FromUsageResolverGlobal fromUsageResolverGlobal;
 
     /**
-     * Conflict resolver for re-materialized constants.
-     */
-    protected ConflictResolver constantMaterializationConflictResolver;
-
-    /**
-     * Conflict resolver for variable synonyms, some virtual moves can be in form vx = MOVE vy, and
-     * so variables are interchangeable.
-     */
-    protected VariableSynonymMap synonymMap;
-
-    /**
      * Track callee saved values from start block to exit blocks.
      */
     protected CalleeSaveMap calleeSaveMap;
@@ -92,9 +81,6 @@ public class RegAllocVerifier {
         this.blockEntryStates = new BlockMap<>(cfg);
 
         this.fromUsageResolverGlobal = new FromUsageResolverGlobal(lir, blockInstructions);
-
-        this.synonymMap = new VariableSynonymMap();
-        this.constantMaterializationConflictResolver = new ConstantMaterializationConflictResolver(this.synonymMap);
 
         this.calleeSaveMap = new CalleeSaveMap(registerAllocationConfig.getRegisterConfig());
     }
@@ -146,7 +132,7 @@ public class RegAllocVerifier {
     }
 
     protected BlockVerifierState createNewBlockState(BasicBlock<?> block) {
-        return new BlockVerifierState(block, registerAllocationConfig, constantMaterializationConflictResolver, synonymMap, calleeSaveMap);
+        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap);
     }
 
     /**
@@ -161,9 +147,6 @@ public class RegAllocVerifier {
             var instructions = this.blockInstructions.get(block);
 
             for (var instr : instructions) {
-                this.constantMaterializationConflictResolver.prepareFromInstr(instr, block);
-                this.synonymMap.prepareFromInstr(instr, block);
-
                 state.check(instr);
                 state.update(instr);
             }
@@ -185,9 +168,6 @@ public class RegAllocVerifier {
             var instructions = this.blockInstructions.get(block);
 
             for (var instr : instructions) {
-                this.constantMaterializationConflictResolver.prepareFromInstr(instr, block);
-                this.synonymMap.prepareFromInstr(instr, block);
-
                 try {
                     state.check(instr);
                     state.update(instr);

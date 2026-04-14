@@ -55,6 +55,10 @@ public class RAValue {
             return new RARegister(ValueUtil.asRegisterValue(value));
         }
 
+        if (LIRValueUtil.isConstantValue(value)) {
+            return new RAConstant(LIRValueUtil.asConstantValue(value), true);
+        }
+
         return new RAValue(value);
     }
 
@@ -78,6 +82,14 @@ public class RAValue {
 
     public boolean isVariable() {
         return false;
+    }
+
+    public boolean isConstant() {
+        return false;
+    }
+
+    public RAConstant asConstant() {
+        return (RAConstant) this;
     }
 
     public boolean isRegister() {

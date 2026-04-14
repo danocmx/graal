@@ -57,35 +57,23 @@ public class BlockVerifierState {
     protected RegisterAllocationConfig registerAllocationConfig;
 
     /**
-     * Conflict resolver for constant materialization.
-     */
-    protected ConflictResolver conflictConstantResolver;
-
-    /**
      * Block this state pertains to.
      */
     protected BasicBlock<?> block;
 
-    protected VariableSynonymMap synonymMap;
-
     protected CalleeSaveMap calleeSaveMap;
 
     public BlockVerifierState(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig,
-                    ConflictResolver constantConflictResolver, VariableSynonymMap synonymMap,
-                    CalleeSaveMap calleeSaveMap) {
+                              CalleeSaveMap calleeSaveMap) {
         this.values = new AllocationStateMap(block, registerAllocationConfig);
         this.registerAllocationConfig = registerAllocationConfig;
-        this.conflictConstantResolver = constantConflictResolver;
-        this.synonymMap = synonymMap;
         this.calleeSaveMap = calleeSaveMap;
         this.block = block;
     }
 
     protected BlockVerifierState(BasicBlock<?> block, BlockVerifierState other) {
         this.registerAllocationConfig = other.registerAllocationConfig;
-        this.conflictConstantResolver = other.conflictConstantResolver;
         this.values = new AllocationStateMap(block, other.values);
-        this.synonymMap = other.synonymMap;
         this.calleeSaveMap = other.calleeSaveMap;
         this.block = block;
     }
@@ -198,42 +186,11 @@ public class BlockVerifierState {
         }
 
         if (state.isConflicted()) {
-            if (orig.isVariable()) {
-                var variable = orig.asVariable();
-                var confState = (ConflictedAllocationState) state;
-
-                ValueAllocationState resolvedState = this.conflictConstantResolver.resolveConflictedState(variable, confState, curr);
-                if (resolvedState == null) {
-                    resolvedState = this.synonymMap.resolveConflictedState(variable, confState, curr);
-                }
-
-                if (resolvedState != null && resolvedState.getValue().equals(orig.getValue())) {
-                    this.values.put(curr, resolvedState, op);
-                    return;
-                }
-            }
-
             throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
         }
 
         if (state instanceof ValueAllocationState valAllocState) {
             if (!valAllocState.value.equals(orig)) {
-                if (orig.isVariable()) {
-                    var variable = orig.asVariable();
-
-                    ValueAllocationState resolvedState = null;
-                    if (LIRValueUtil.isConstantValue(valAllocState.value.getValue())) {
-                        resolvedState = this.conflictConstantResolver.resolveValueState(variable, valAllocState, curr);
-                    } else if (valAllocState.getRAValue().isVariable()) {
-                        resolvedState = this.synonymMap.resolveValueState(variable, valAllocState, curr);
-                    }
-
-                    if (resolvedState != null && resolvedState.getValue().equals(orig.getValue())) {
-                        this.values.put(curr, resolvedState, op);
-                        return;
-                    }
-                }
-
                 throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
             }
 
@@ -241,10 +198,29 @@ public class BlockVerifierState {
                 throw new KindsMismatchException(op, block, orig, valAllocState.value, false);
             }
 
+            if (orig.isConstant()) {
+                var constant = orig.asConstant();
+                checkMaterializationLocation(constant, valAllocState);
+            }
+
             return;
         }
 
         throw GraalError.shouldNotReachHere("Invalid state " + state);
+    }
+
+    protected void checkMaterializationLocation(RAConstant constant, ValueAllocationState state) {
+        if (constant.canRematerializeToStack) {
+            return;
+        }
+
+        var source = state.getSource();
+        if (source instanceof RAVInstruction.ValueMove move) {
+            var location = move.getLocation();
+            if (LIRValueUtil.isStackSlotValue(location.getValue())) {
+                throw new ConstantRematerializedToStackException(constant, move.getLocation(), state);
+            }
+        }
     }
 
     protected boolean kindsEqual(RAValue orig, RAValue curr) {
@@ -855,7 +831,12 @@ public class BlockVerifierState {
 
             this.values.putWithoutRegCheck(valueMove.getLocation(), new ValueAllocationState(valueMove.variableOrConstant, valueMove, block));
         } else {
-            this.values.put(valueMove.getLocation(), new ValueAllocationState(valueMove.variableOrConstant, valueMove, block), valueMove);
+            var state = new ValueAllocationState(valueMove.variableOrConstant, valueMove, block);
+            if (valueMove.validateRegisters) {
+                this.values.put(valueMove.getLocation(), state, valueMove);
+            } else {
+                this.values.putWithoutRegCheck(valueMove.getLocation(), state);
+            }
         }
     }
 }

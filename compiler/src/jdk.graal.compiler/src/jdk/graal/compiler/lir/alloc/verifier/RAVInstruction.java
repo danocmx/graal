@@ -497,10 +497,17 @@ public class RAVInstruction {
 
         protected RAValue location; // Can also be another variable!
 
+        public boolean validateRegisters;
+
         public ValueMove(LIRInstruction instr, Value variableOrConstant, Value location) {
+            this(instr, variableOrConstant, location, true);
+        }
+
+        public ValueMove(LIRInstruction instr, Value variableOrConstant, Value location, boolean validateRegisters) {
             super(instr);
             this.variableOrConstant = RAValue.create(variableOrConstant);
             this.location = RAValue.create(location);
+            this.validateRegisters = validateRegisters;
         }
 
         @Override

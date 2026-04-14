@@ -48,6 +48,7 @@ import jdk.graal.compiler.lir.alloc.verifier.KindsMismatchException;
 import jdk.graal.compiler.lir.alloc.verifier.MissingLocationException;
 import jdk.graal.compiler.lir.alloc.verifier.MissingReferenceException;
 import jdk.graal.compiler.lir.alloc.verifier.OperandFlagMismatchException;
+import jdk.graal.compiler.lir.alloc.verifier.RAConstant;
 import jdk.graal.compiler.lir.alloc.verifier.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
 import jdk.graal.compiler.lir.alloc.verifier.RAValue;
@@ -906,25 +907,18 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
             constant = new ConstantValue(kind, jvConst);
             var stackSlot = new SimpleVirtualStackSlot(1, kind);
-            var variable = new Variable(kind, lir.numVariables() + 1);
 
             stackSlotValue = RAValue.create(stackSlot);
-            variableValue = (RAVariable) RAValue.create(variable);
-
-            var loadConstOp = new LoadConstOp(variable, constant.getJavaConstant());
-            var constSpawnOp = new RAVInstruction.Op(loadConstOp);
-            loadConstOp.forEachOutput(constSpawnOp.dests.copyOriginalProc);
-            constSpawnOp.dests.curr[0] = stackSlotValue;
+            var constantValue = new RAConstant(constant, false);
 
             var remMove = new RAVInstruction.ValueMove(new LoadConstOp(stackSlot, constant.getJavaConstant()), constant, stackSlot);
 
             var usage = new RAVInstruction.Op(new StandardOp.NoOp(null, 0));
             usage.uses = new RAVInstruction.ValueArrayPair(1);
             usage.uses.curr[0] = stackSlotValue;
-            usage.uses.orig[0] = variableValue;
+            usage.uses.orig[0] = constantValue;
 
             var blockInstructions = instructions.get(0);
-            blockInstructions.add(1, constSpawnOp);
             blockInstructions.add(blockInstructions.size() - 1, remMove);
             blockInstructions.add(blockInstructions.size() - 1, usage);
 
@@ -1693,7 +1687,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         assertException(ConstantRematerializedToStackException.class);
         var crException = (ConstantRematerializedToStackException) exception;
         Assert.assertEquals(constRemPhase.stackSlotValue, crException.location);
-        Assert.assertEquals(constRemPhase.variableValue, crException.variable);
         Assert.assertEquals(constRemPhase.constant, crException.state.getValue());
     }
 
