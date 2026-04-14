@@ -24,6 +24,7 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
+import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
@@ -266,7 +267,50 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                 }
             }
         }
+
         return preallocMap;
+    }
+
+    /**
+     * Normalizes the values in this input array pair to remove
+     * any variables that can be substituted for constants or
+     * variables that are aliased by different ones.
+     *
+     * <p>
+     * We do this to make the internal verifier IR more consistent
+     * because sometimes a constant value can be used as an input,
+     * while at other times it's substituted behind a variable,
+     * which can also re-materialize later.
+     * </p>
+     *
+     * <p>
+     * As for variable aliasing, sometimes a move is coalesced
+     * but the register allocator, but the mentioned of the
+     * alias variable still remain; we make sure to remove them.
+     * </p>
+     *
+     * @param values Input array pair
+     * @param synonymMap Variable synonym map, used to find the first concrete variable.
+     * @param constantMap Constant map, map variables to their respective constant values.
+     */
+    protected void normalizeValues(RAVInstruction.ValueArrayPair values, VariableSynonymMap synonymMap, Map<RAVariable, RAValue> constantMap) {
+        for (int i = 0; i < values.count; i++) {
+            var value = values.orig[i];
+            if (!value.isVariable()) {
+                continue;
+            }
+
+            var variable = value.asVariable();
+            if (constantMap.containsKey(variable)) {
+                values.orig[i] = constantMap.get(variable);
+                continue;
+            }
+
+            var synonym = synonymMap.parent.get(value.asVariable());
+            if (synonym != null) {
+                values.orig[i] = constantMap.getOrDefault(synonym, synonym);
+            }
+        }
     }
 
     /**
@@ -338,6 +382,9 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      * @return Verifier IR
      */
     protected BlockMap<List<RAVInstruction.Base>> getVerifierInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext ctx) {
+        VariableSynonymMap sMap = new VariableSynonymMap();
+        Map<RAVariable, RAValue> cMap = new EconomicHashMap<>();
+
         Map<RAVariable, RAVInstruction.Op> definedVariables = new EconomicHashMap<>();
         var presentInstructions = preprocessAllocatedInstructions(lir, preallocMap, definedVariables);
 
@@ -387,11 +434,42 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     }
                 });
 
-                instructionList.add(opRAVInstr);
+                normalizeValues(opRAVInstr.uses, sMap, cMap);
+                normalizeValues(opRAVInstr.alive, sMap, cMap);
+
+                if (instruction.isLoadConstantOp()) {
+                    var loadConstOp = StandardOp.LoadConstantOp.asLoadConstantOp(instruction);
+                    var location = loadConstOp.getResult();
+
+                    ConstantValue constant = new ConstantValue(location.getValueKind(LIRKind.class), loadConstOp.getConstant());
+
+                    var orig = opRAVInstr.dests.orig[0];
+                    if (orig.isVariable()) {
+                        var variable = orig.asVariable();
+                        cMap.put(variable, new RAConstant(constant, loadConstOp.canRematerializeToStack()));
+                    }
+
+                    var curr = opRAVInstr.dests.curr[0];
+                    boolean validateRegs = !orig.equals(curr); // Only validate actual changes
+                    var valMove = new RAVInstruction.ValueMove(instruction, constant, location, validateRegs);
+
+                    instructionList.add(valMove);
+                } else {
+                    instructionList.add(opRAVInstr);
+                }
+
                 var speculativeMoves = opRAVInstr.getSpeculativeMoveList();
                 if (!speculativeMoves.isEmpty()) {
                     var readdedMoves = handleSpeculativeMoves(opRAVInstr, presentInstructions, definedVariables);
-                    instructionList.addAll(readdedMoves);
+
+                    for (var readdedMove : readdedMoves) {
+                        if (readdedMove.variableOrConstant.isVariable() && readdedMove.location.isVariable()) {
+                            // Coalesced variable-to-variable move, remove old references of the output variable
+                            sMap.addSynonym(readdedMove.variableOrConstant.asVariable(), readdedMove.location.asVariable());
+                        } else {
+                            instructionList.add(readdedMove);
+                        }
+                    }
                 }
 
                 var virtualMoves = opRAVInstr.getVirtualMoveList();
