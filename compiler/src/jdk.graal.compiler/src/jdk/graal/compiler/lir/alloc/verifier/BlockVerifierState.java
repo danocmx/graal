@@ -320,6 +320,7 @@ public class BlockVerifierState {
             checkOperandFlags(op.temp, op);
 
             checkBytecodeFrames(op);
+            checkVirtualValues(op);
 
             if (op.references != null) {
                 checkReferences(op);
@@ -462,42 +463,51 @@ public class BlockVerifierState {
      */
     public void checkBytecodeFrames(RAVInstruction.Op op) {
         for (var frame : op.bcFrames) {
-            for (int i = 0; i < frame.kinds.length; i++) {
-                var origJV = frame.orig[i];
-                if (!(origJV instanceof AllocatableValue orig) || Value.ILLEGAL.equals(orig)) {
-                    continue;
-                }
+            checkStateValues(frame, op);
+        }
+    }
 
-                var currJV = frame.curr[i];
-                if (!(currJV instanceof AllocatableValue curr) || Value.ILLEGAL.equals(curr)) {
-                    continue;
-                }
+    protected void checkVirtualValues(RAVInstruction.Op op) {
+        for (var obj : op.virtualObjects) {
+            checkStateValues(obj, op);
+        }
+    }
 
-                var kind = frame.kinds[i];
-                if (JavaKind.Long.equals(kind)) {
-                    // Skipping long(s) because it can be a numeric value
-                    // or a derived reference / native pointer
-                    continue;
-                }
+    protected void checkStateValues(RAVInstruction.StateValuePair values, RAVInstruction.Op op) {
+        for (int i = 0; i < values.kinds.length; i++) {
+            var origJV = values.orig[i];
+            if (!(origJV instanceof AllocatableValue orig) || Value.ILLEGAL.equals(orig)) {
+                continue;
+            }
 
-                var origLIRKind = orig.getValueKind(LIRKind.class);
-                var currLIRKind = curr.getValueKind(LIRKind.class);
-                if (JavaKind.Object.equals(kind)) {
-                    if (!origLIRKind.isValue() && !currLIRKind.isValue()) {
-                        continue;
-                    }
+            var currJV = values.curr[i];
+            if (!(currJV instanceof AllocatableValue curr) || Value.ILLEGAL.equals(curr)) {
+                continue;
+            }
 
+            var kind = values.kinds[i];
+            if (JavaKind.Long.equals(kind)) {
+                // Skipping long(s) because it can be a numeric value
+                // or a derived reference / native pointer
+                continue;
+            }
+
+            var origLIRKind = orig.getValueKind(LIRKind.class);
+            var currLIRKind = curr.getValueKind(LIRKind.class);
+            if (JavaKind.Object.equals(kind)) {
+                if (origLIRKind.getPlatformKind().getVectorLength() == 1 && (origLIRKind.isValue() || currLIRKind.isValue())) {
+                    // Vector kinds are marked as an object but not as a reference in LIR.
                     throw new JavaKindReferenceMismatchException(orig, curr, kind, op, block);
-                } else {
-                    if (origLIRKind.isValue() && currLIRKind.isValue()) {
-                        // Either not a reference or a derived one - which might not be marked as
-                        // Object
-                        continue;
-                    }
-
+                }
+            } else {
+                if (!origLIRKind.isValue() || !currLIRKind.isValue()) {
+                    // Either not a reference or a derived one - which might not be marked as
+                    // Object
                     throw new JavaKindReferenceMismatchException(orig, curr, kind, op, block);
                 }
             }
+
+            checkOperand(RAValue.create(orig), RAValue.create(curr), op);
         }
     }
 

@@ -29,6 +29,7 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.debug.DebugCloseable;
 import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.debug.TimerKey;
 import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.LIR;
@@ -256,6 +257,19 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                             opRAVInstr.bcFrames.add(new RAVInstruction.StateValuePair(values, kinds));
                             frame = frame.caller();
                         }
+
+                        if (!state.hasDebugInfo()) {
+                            state.initDebugInfo();
+                        }
+
+                        var virtualObjects = state.debugInfo().getVirtualObjectMapping();
+                        if (virtualObjects == null) {
+                            return;
+                        }
+
+                        for (var obj : state.debugInfo().getVirtualObjectMapping()) {
+                            opRAVInstr.virtualObjects.add(new RAVInstruction.StateValuePair(obj.getValues().clone(), obj.getSlotKinds()));
+                        }
                     }
                 });
 
@@ -282,38 +296,37 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
         boolean failOnFirst = Options.RAVFailOnFirst.getValue(lir.getOptions());
 
+        var debugCtx = lir.getDebug();
+
         try {
             verifier.run(failOnFirst);
         } catch (RAVException e) {
-            var debugCtx = lir.getDebug();
+            var debugPath = debugCtx.getDumpPath(".rav.txt", false);
 
-            if (debugCtx.isDumpEnabled(DebugContext.VERBOSE_LEVEL)) {
-                var debugPath = debugCtx.getDumpPath(".rav.txt", false);
+            verifier.getPrinter(getPrintStream(debugPath)).printIRWithException(e);
 
-                try (PrintStream output = new PrintStream(debugPath)) {
-                    verifier.getPrinter(output).printIRWithException(e);
-                } catch (FileNotFoundException ignored) {
-                }
-
-                // Keep original message with class path prefix and add debug path info
-                // to the end so it's easier to access.
-                throw new RAVException(e + ", see debug file " + debugPath, e);
-            }
-
-            throw e;
+            // Keep original message with class path prefix and add debug path info
+            // to the end so it's easier to access.
+            throw new RAVException(e + ", see debug file " + debugPath, e);
         } catch (RAVFailedVerificationException e) {
-            var debugCtx = lir.getDebug();
-
             if (debugCtx.isDumpEnabled(DebugContext.VERBOSE_LEVEL)) {
-                var debugPath = debugCtx.getDumpPath(".rav.txt", false);
-
-                try (PrintStream output = new PrintStream(debugPath)) {
-                    verifier.getPrinter(output).printIRWithMultiExceptions(e);
-                } catch (FileNotFoundException ignored) {
-                }
+                verifier.getPrinter(getPrintStream(debugCtx)).printIRWithMultiExceptions(e);
             }
 
             throw e;
+        }
+    }
+
+    protected PrintStream getPrintStream(DebugContext debugCtx) {
+        var debugPath = debugCtx.getDumpPath(".rav.txt", false);
+        return getPrintStream(debugPath);
+    }
+
+    protected PrintStream getPrintStream(String path) {
+        try {
+            return new PrintStream(path);
+        } catch (FileNotFoundException ignored) {
+            throw new GraalError("cannot open debug file " + path);
         }
     }
 
@@ -383,6 +396,23 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                             opRAVInstr.bcFrames.get(i).setCurr(frame.values);
                             frame = frame.caller();
                             i++;
+                        }
+
+                        if (!state.hasDebugInfo()) {
+                            state.initDebugInfo();
+                        }
+
+                        var virtualObjects = state.debugInfo().getVirtualObjectMapping();
+                        if (virtualObjects == null) {
+                            return;
+                        }
+
+                        assert virtualObjects.length == opRAVInstr.virtualObjects.size() : "New virtual object introduced!";
+
+                        for (int j = 0; j < virtualObjects.length; j++) {
+                            var obj = virtualObjects[j];
+                            var values = obj.getValues().clone();
+                            opRAVInstr.virtualObjects.get(j).setCurr(values);
                         }
                     }
                 });

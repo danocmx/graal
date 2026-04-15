@@ -269,6 +269,8 @@ public class RAVInstruction {
          */
         public ArrayList<StateValuePair> bcFrames;
 
+        public ArrayList<StateValuePair> virtualObjects;
+
         /**
          * List of GC roots, calculated using LocationMarker class, other references in state maps
          * need to be nullified.
@@ -318,6 +320,7 @@ public class RAVInstruction {
             this.stateValues = new ValueArrayPair(countValuesProc.getCount());
 
             this.bcFrames = new ArrayList<>();
+            this.virtualObjects = new ArrayList<>();
         }
 
         public boolean hasMissingDefinitions() {

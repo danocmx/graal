@@ -30,6 +30,8 @@ import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.StandardOp;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
+import jdk.vm.ci.meta.AllocatableValue;
+import jdk.vm.ci.meta.Value;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -317,6 +319,9 @@ public class FromUsageResolverGlobal {
 
                     if (op.hasCompleteState()) {
                         handleUsages(op.stateValues, op, block);
+                    } else {
+                        handleStateValues(op.bcFrames, op, block);
+                        handleStateValues(op.virtualObjects, op, block);
                     }
                 }
             }
@@ -384,24 +389,46 @@ public class FromUsageResolverGlobal {
      */
     protected void handleUsages(RAVInstruction.ValueArrayPair values, RAVInstruction.Op op, BasicBlock<?> block) {
         for (var i = 0; i < values.count; i++) {
-            if (!values.orig[i].isVariable() || values.curr[i] == null) {
-                continue;
+            handleOperand(values.orig[i], values.curr[i], op);
+        }
+    }
+
+    protected void handleStateValues(List<RAVInstruction.StateValuePair> pairs, RAVInstruction.Op op, BasicBlock<?> block) {
+        for (var values : pairs) {
+            for (int i = 0; i < values.kinds.length; i++) {
+                var origJV = values.orig[i];
+                if (!(origJV instanceof AllocatableValue orig) || Value.ILLEGAL.equals(orig)) {
+                    continue;
+                }
+
+                var currJV = values.curr[i];
+                if (!(currJV instanceof AllocatableValue curr) || Value.ILLEGAL.equals(curr)) {
+                    continue;
+                }
+
+                handleOperand(RAValue.create(orig), RAValue.create(curr), op);
+            }
+        }
+    }
+
+    protected void handleOperand(RAValue orig, RAValue curr, RAVInstruction.Op op) {
+        if (!orig.isVariable() || curr == null) {
+            return;
+        }
+
+        var variable = orig.asVariable();
+        if (labelMap.containsKey(variable) && !initialLocations.containsKey(variable)) {
+            if (!firstUsages.containsKey(op)) {
+                firstUsages.put(op, new EconomicHashSet<>());
             }
 
-            var variable = values.orig[i].asVariable();
-            if (labelMap.containsKey(variable) && !initialLocations.containsKey(variable)) {
-                if (!firstUsages.containsKey(op)) {
-                    firstUsages.put(op, new EconomicHashSet<>());
-                }
+            firstUsages.get(op).add(variable);
+            initialLocations.put(variable, curr);
 
-                firstUsages.get(op).add(variable);
-                initialLocations.put(variable, values.curr[i]);
+            for (var entry : aliasMap.entrySet()) {
+                var aliasedVariables = entry.getValue();
 
-                for (var entry : aliasMap.entrySet()) {
-                    var aliasedVariables = entry.getValue();
-
-                    aliasedVariables.removeIf(pair -> pair.variable.equals(variable));
-                }
+                aliasedVariables.removeIf(pair -> pair.variable.equals(variable));
             }
         }
     }
