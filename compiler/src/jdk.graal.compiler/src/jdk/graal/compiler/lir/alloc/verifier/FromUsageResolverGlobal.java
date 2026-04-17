@@ -291,17 +291,6 @@ public class FromUsageResolverGlobal {
 
             for (var i = 0; i < label.dests.count; i++) {
                 if (label.dests.orig[i].isVariable()) {
-                    if (label.dests.curr[i] != null) {
-                        // TestCase: TruffleSafepointTest
-                        // java.concurrent.ForkJoinPool
-                        // some methods for this class have location kept in
-                        // them after the register allocation is complete,
-                        // but such information should be stripped by the allocator.
-                        // This information uses one register for 2 variables in a label
-                        // and triggers an error in the verification
-                        label.dests.curr[i] = null;
-                    }
-
                     var variable = label.dests.orig[i].asVariable();
                     labelMap.put(variable, label);
                 }

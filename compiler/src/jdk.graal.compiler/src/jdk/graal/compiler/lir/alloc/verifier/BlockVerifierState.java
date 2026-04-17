@@ -178,21 +178,26 @@ public class BlockVerifierState {
         }
 
         AllocationState state = this.values.get(curr);
-        if (orig.equals(curr)) {
-            // For these cases we do not consider checking state taking the original
-            // register as a symbol, because there are too many cases when this does
-            // not work, for example, RETURN with rax tends to contain the actual
-            // generated variable instead of rax symbol, or NEAR_FOREIGN_CALL
-            // keeps its own registers before and after allocation, but those
-            // can also contain different variable symbols.
-            return;
-        }
+        if (orig.equals(curr) || (ValueUtil.isStackSlot(curr.getValue()) && LIRValueUtil.isVirtualStackSlot(orig.getValue()))) {
+            /*
+             * Either the location is the same, or if stack allocator ran, we need to account for
+             * original vstack slot being changed to a concrete stack slot (there was no variable
+             * here before allocation). We only forbid state being "Conflicted", because it is
+             * supposed to be handled by phi function. Ideally, we would only check for non-specific
+             * "Value" state, but there are cases where the location has "Unknown" state and the
+             * location itself is never written to, we do not fail here.
+             * 
+             * Symbols are generally unchanged for instructions with predefined registers, like
+             * function calls. The vstack to concrete stack slot happens in
+             * "IntegerDivRemCanonicalizationTest", with the instruction
+             * "r10|QWORD = STACKLEA slot: stack:80|ILLEGAL[*]" - stack:80 was vstack:0 before
+             * allocation.
+             */
 
-        if (ValueUtil.isStackSlot(curr.getValue()) && LIRValueUtil.isVirtualStackSlot(orig.getValue())) {
-            // TestCase: IntegerDivRemCanonicalizationTest
-            // instruction r10|QWORD = STACKLEA slot: stack:80|ILLEGAL[*] in B0
-            // had vstack:0, which is not mentioned in first label or elsewhere
-            // so symbol vstack:0 won't be found
+            if (state.isConflicted()) {
+                throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
+            }
+
             return;
         }
 

@@ -58,6 +58,7 @@ import org.graalvm.collections.Equivalence;
 import java.io.FileNotFoundException;
 import java.io.PrintStream;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -221,9 +222,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     continue;
                 }
 
-                boolean speculative = false;
                 if (this.isSpeculativeMove(instruction)) {
-                    speculative = true;
                     /*
                      * Speculative moves are in form ry = MOVE vx, which could be removed if the
                      * variable ends up being allocated to the same register as ry. If it was
@@ -238,7 +237,8 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     var register = valueMov.getResult();
 
                     var virtualMove = new RAVInstruction.ValueMove(instruction, variable, register);
-                    previousInstr.addSpeculativeMove(virtualMove);
+
+                    previousInstr.setSpeculativeMove(virtualMove);
                 }
 
                 var opRAVInstr = new RAVInstruction.Op(instruction);
@@ -271,10 +271,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                 });
 
                 preallocMap.put(instruction, opRAVInstr);
-
-                if (!speculative) {
-                    previousInstr = opRAVInstr;
-                }
+                previousInstr = opRAVInstr;
             }
         }
 
@@ -297,26 +294,23 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      * </p>
      *
      * @param values Input array pair
-     * @param synonymMap Variable synonym map, used to find the first concrete variable.
-     * @param constantMap Constant map, map variables to their respective constant values.
+     * @param info
      */
-    protected void normalizeValues(RAVInstruction.ValueArrayPair values, VariableSynonymMap synonymMap, Map<RAVariable, RAValue> constantMap) {
+    protected void normalizeValues(RAVInstruction.ValueArrayPair values, VerifierPreProcessInfo info) {
         for (int i = 0; i < values.count; i++) {
             var value = values.orig[i];
             if (!value.isVariable()) {
+                var curr = values.curr[i];
+                if (value.equals(curr) && info.assertionMap.containsKey(curr)) {
+                    values.orig[i] = info.assertionMap.get(curr);
+                    info.assertionMap.remove(curr);
+                }
+
                 continue;
             }
 
             var variable = value.asVariable();
-            if (constantMap.containsKey(variable)) {
-                values.orig[i] = constantMap.get(variable);
-                continue;
-            }
-
-            var synonym = synonymMap.parent.get(value.asVariable());
-            if (synonym != null) {
-                values.orig[i] = constantMap.getOrDefault(synonym, synonym);
-            }
+            values.orig[i] = normalizeVariable(info, variable);
         }
     }
 
@@ -379,6 +373,22 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         return context.registerAllocationConfig;
     }
 
+    protected static class VerifierPreProcessInfo {
+        Map<RAVariable, RAValue> constantMap;
+        VariableSynonymMap synonymMap;
+        Map<RAVariable, RAVInstruction.Op> definedVariables;
+        Set<LIRInstruction> presentInstructions;
+        Map<RAValue, RAValue> assertionMap;
+
+        VerifierPreProcessInfo() {
+            this.constantMap = new EconomicHashMap<>();
+            this.synonymMap = new VariableSynonymMap();
+            this.definedVariables = new EconomicHashMap<>();
+            this.presentInstructions = new EconomicHashSet<>();
+            this.assertionMap = new EconomicHashMap<>();
+        }
+    }
+
     /**
      * Process instructions after allocation and create the Verifier IR. Using previously stored
      * instructions from the PreAlloc phase.
@@ -389,11 +399,9 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      * @return Verifier IR
      */
     protected BlockMap<List<RAVInstruction.Base>> getVerifierInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext ctx) {
-        VariableSynonymMap sMap = new VariableSynonymMap();
-        Map<RAVariable, RAValue> cMap = new EconomicHashMap<>();
+        VerifierPreProcessInfo info = new VerifierPreProcessInfo();
 
-        Map<RAVariable, RAVInstruction.Op> definedVariables = new EconomicHashMap<>();
-        var presentInstructions = preprocessAllocatedInstructions(lir, preallocMap, definedVariables);
+        preprocessAllocatedInstructions(lir, preallocMap, info);
 
         BlockMap<List<RAVInstruction.Base>> blockInstructions = new BlockMap<>(lir.getControlFlowGraph());
         for (var blockId : lir.getBlocks()) {
@@ -441,8 +449,8 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     }
                 });
 
-                normalizeValues(opRAVInstr.uses, sMap, cMap);
-                normalizeValues(opRAVInstr.alive, sMap, cMap);
+                normalizeValues(opRAVInstr.uses, info);
+                normalizeValues(opRAVInstr.alive, info);
 
                 if (instruction.isLoadConstantOp()) {
                     var loadConstOp = StandardOp.LoadConstantOp.asLoadConstantOp(instruction);
@@ -453,7 +461,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     var orig = opRAVInstr.dests.orig[0];
                     if (orig.isVariable()) {
                         var variable = orig.asVariable();
-                        cMap.put(variable, new RAConstant(constant, loadConstOp.canRematerializeToStack()));
+                        info.constantMap.put(variable, new RAConstant(constant, loadConstOp.canRematerializeToStack()));
                     }
 
                     var curr = opRAVInstr.dests.curr[0];
@@ -465,33 +473,97 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     instructionList.add(opRAVInstr);
                 }
 
-                var speculativeMoves = opRAVInstr.getSpeculativeMoveList();
-                if (!speculativeMoves.isEmpty()) {
-                    var readdedMoves = handleSpeculativeMoves(opRAVInstr, presentInstructions, definedVariables);
-
-                    for (var readdedMove : readdedMoves) {
-                        if (readdedMove.variableOrConstant.isVariable() && readdedMove.location.isVariable()) {
-                            /*
-                             * Coalesced variable-to-variable move, remove old references of the
-                             * output variable
-                             */
-                            sMap.addSynonym(readdedMove.variableOrConstant.asVariable(), readdedMove.location.asVariable());
-                        } else {
-                            instructionList.add(readdedMove);
-                        }
-                    }
-                }
-
                 var virtualMoves = opRAVInstr.getVirtualMoveList();
                 for (var virtMove : virtualMoves) {
                     instructionList.add(fixOldValueMove(virtMove));
                 }
+
+                if (opRAVInstr.speculativeMove == null) {
+                    continue;
+                }
+
+                var fromSpecs = handleSpeculativeMoves(opRAVInstr.speculativeMove, preallocMap, info);
+                instructionList.addAll(fromSpecs);
             }
 
             blockInstructions.put(block, instructionList);
+
+            assert info.assertionMap.isEmpty() : "Value assertion map is not empty when it should be";
         }
 
         return blockInstructions;
+    }
+
+    protected List<RAVInstruction.Base> handleSpeculativeMoves(RAVInstruction.ValueMove root, Map<LIRInstruction, RAVInstruction.Base> preallocMap, VerifierPreProcessInfo info) {
+        List<RAVInstruction.Base> instructions = new ArrayList<>();
+
+        RAVInstruction.ValueMove move = root;
+        while (move != null) {
+            if (info.presentInstructions.contains(move.getLIRInstruction())) {
+                break; // Will handle rest of the list afterward
+            }
+
+            if (!move.getLocation().isVariable() && move.variableOrConstant.isVariable()) {
+                var variable = move.variableOrConstant.asVariable();
+                var variableDefInstr = info.definedVariables.get(variable);
+                if (variableDefInstr != null) {
+                    RAValue symbol = normalizeVariable(info, variable);
+
+                    /*
+                     * These moves tell the allocator where some values need to be stored, to adhere
+                     * to the ABI, in order to not lose this information, we store it in this
+                     * RAValue -> RAValue map, and when an instruction which uses this location, but
+                     * original symbol is unchanged (meaning it is equal to the location), we change
+                     * the original symbol to the symbol stored in this map for this location.
+                     */
+                    info.assertionMap.put(move.getLocation(), symbol);
+                } else {
+                    instructions.add(fixOldValueMove(move));
+                }
+            } else {
+                if (move.variableOrConstant.isVariable() && move.location.isVariable()) {
+                    /*
+                     * Coalesced variable-to-variable move, remove old references of the output
+                     * variable
+                     */
+                    info.synonymMap.addSynonym(move.variableOrConstant.asVariable(), move.location.asVariable());
+                } else {
+                    instructions.add(fixOldValueMove(move));
+                }
+            }
+
+            var op = preallocMap.get(move.getLIRInstruction());
+            for (var vmove : op.virtualMoveList) {
+                instructions.add(fixOldValueMove(vmove));
+            }
+
+            move = op.speculativeMove;
+        }
+
+        return instructions;
+    }
+
+    /**
+     * Normalize a variable by substituting it by the constant that defined it, or by the variable
+     * it's aliasing.
+     *
+     * @param info Pre-process info
+     * @param variable Variable to normalize
+     * @return Normalized variable
+     */
+    protected RAValue normalizeVariable(VerifierPreProcessInfo info, RAVariable variable) {
+        RAValue symbol = variable;
+        if (info.constantMap.containsKey(variable)) {
+            symbol = info.constantMap.get(variable);
+        }
+
+        var synonym = info.synonymMap.parent.get(variable);
+        if (synonym != null) {
+            // If base variable was also a constant, then just use the constant
+            symbol = info.constantMap.getOrDefault(synonym, synonym);
+        }
+
+        return symbol;
     }
 
     /**
@@ -531,76 +603,34 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      *
      * @param lir LIR
      * @param preallocMap Map of instructions before allocation
-     * @param definedVariables Output map, set defined variables here
-     * @return Set of instructions present after allocation
+     * @param info
      */
-    protected Set<LIRInstruction> preprocessAllocatedInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, Map<RAVariable, RAVInstruction.Op> definedVariables) {
-        Set<LIRInstruction> presentInstructions = new EconomicHashSet<>();
+    protected void preprocessAllocatedInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, VerifierPreProcessInfo info) {
         for (var blockId : lir.getBlocks()) {
             BasicBlock<?> block = lir.getBlockById(blockId);
             ArrayList<LIRInstruction> instructions = lir.getLIRforBlock(block);
 
             for (var instruction : instructions) {
-                presentInstructions.add(instruction);
+                info.presentInstructions.add(instruction);
 
                 var rAVInstr = preallocMap.get(instruction);
                 if (rAVInstr instanceof RAVInstruction.Op op) {
                     for (int i = 0; i < op.dests.count; i++) {
                         if (op.dests.orig[i].isVariable()) {
                             var variable = op.dests.orig[i].asVariable();
-                            definedVariables.put(variable, op);
+                            info.definedVariables.put(variable, op);
+                        }
+                    }
+
+                    for (var move : op.getVirtualMoveList()) {
+                        if (move.variableOrConstant.isVariable()) {
+                            var variable = move.variableOrConstant.asVariable();
+                            info.definedVariables.put(variable, op);
                         }
                     }
                 }
             }
         }
-        return presentInstructions;
-    }
-
-    /**
-     * Handle speculative moves that should be re-added back to the IR to keep verification
-     * information in-tact, based on instructions present after allocation and variables defined by
-     * them.
-     *
-     * @param op Op that holds these speculative instructions
-     * @param presentInstructions Instructions present in the IR in the form of a Map
-     * @param definedVariables Variables already defined
-     * @return List of speculative moves that need to be added back
-     */
-    protected List<RAVInstruction.ValueMove> handleSpeculativeMoves(RAVInstruction.Op op, Set<LIRInstruction> presentInstructions, Map<RAVariable, RAVInstruction.Op> definedVariables) {
-        List<RAVInstruction.ValueMove> toAdd = new ArrayList<>();
-        for (var speculativeMove : op.getSpeculativeMoveList()) {
-            if (presentInstructions.contains(speculativeMove.getLIRInstruction())) {
-                continue;
-            }
-
-            if (!speculativeMove.getLocation().isVariable() && speculativeMove.variableOrConstant.isVariable()) {
-                var variable = speculativeMove.variableOrConstant.asVariable();
-                var variableDefInstr = definedVariables.get(variable);
-                if (variableDefInstr == null) {
-                    continue;
-                }
-
-                if (variableDefInstr.lirInstruction instanceof StandardOp.LabelOp && variableDefInstr.lirInstruction == op.lirInstruction) {
-                    for (int i = 0; i < op.dests.count; i++) {
-                        var orig = op.dests.orig[i];
-                        if (!orig.isVariable() || op.dests.curr[i] != null) {
-                            continue;
-                        }
-
-                        // Add speculative instruction location back to the label
-                        // where it's missing, only when speculative move is part
-                        // of said label.
-                        op.dests.curr[i] = speculativeMove.getLocation();
-                    }
-                }
-
-                continue;
-            }
-
-            toAdd.add(fixOldValueMove(speculativeMove));
-        }
-        return toAdd;
     }
 
     /**

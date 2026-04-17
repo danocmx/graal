@@ -72,12 +72,11 @@ public class RAVInstruction {
          * Before alloc: {@code v1 = MOVE v2} after alloc: {@code rax = MOVE rax}
          * </p>
          */
-        protected List<ValueMove> speculativeMoveList;
+        public ValueMove speculativeMove;
 
         public Base(LIRInstruction lirInstruction) {
             this.lirInstruction = lirInstruction;
             this.virtualMoveList = new ArrayList<>();
-            this.speculativeMoveList = new ArrayList<>();
         }
 
         public LIRInstruction getLIRInstruction() {
@@ -92,12 +91,13 @@ public class RAVInstruction {
             return virtualMoveList;
         }
 
-        public void addSpeculativeMove(ValueMove speculativeMove) {
-            this.speculativeMoveList.add(speculativeMove);
+        public void setSpeculativeMove(ValueMove speculativeMove) {
+            assert this.speculativeMove == null : "Speculative move already set";
+            this.speculativeMove = speculativeMove;
         }
 
-        public List<ValueMove> getSpeculativeMoveList() {
-            return speculativeMoveList;
+        public ValueMove getSpeculativeMove() {
+            return speculativeMove;
         }
     }
 
