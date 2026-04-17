@@ -68,8 +68,13 @@ public class UnknownAllocationState extends AllocationState {
     }
 
     @Override
-    public boolean equals(AllocationState other) {
+    public boolean equals(Object other) {
         return other == INSTANCE;
+    }
+
+    @Override
+    public int hashCode() {
+        return 0;
     }
 
     @Override

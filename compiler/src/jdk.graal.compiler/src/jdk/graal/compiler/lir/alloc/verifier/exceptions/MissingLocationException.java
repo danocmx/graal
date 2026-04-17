@@ -22,22 +22,29 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.exceptions;
+
+import jdk.graal.compiler.core.common.cfg.BasicBlock;
+import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
+import jdk.graal.compiler.lir.alloc.verifier.RAValue;
 
 /**
- * Constant was rematerialized to a stack location, which was forbidden for this variable/constant.
+ * No location found in an instruction after allocation for certain variable.
  */
 @SuppressWarnings("serial")
-public class ConstantRematerializedToStackException extends RAVException {
-    public RAConstant constant;
-    public RAValue location;
-    public ValueAllocationState state;
+public class MissingLocationException extends RAVException {
+    /**
+     * Construct a MissingLocationError.
+     *
+     * @param instruction Instruction where violation occurred
+     * @param block Block where violation occurred
+     * @param variable Variable before allocation that has no location afterward
+     */
+    public MissingLocationException(RAVInstruction.Op instruction, BasicBlock<?> block, RAValue variable) {
+        super(MissingLocationException.getMessage(variable), instruction, block);
+    }
 
-    public ConstantRematerializedToStackException(RAConstant constant, RAValue location, ValueAllocationState state) {
-        super("Constant " + constant + " cannot be rematerialized to stack location " + location, state.getSource(), state.getBlock());
-
-        this.constant = constant;
-        this.location = location;
-        this.state = state;
+    static String getMessage(RAValue variable) {
+        return "Variable " + variable + " is missing a location";
     }
 }

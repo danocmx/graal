@@ -22,26 +22,34 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
+import jdk.graal.compiler.lir.LIRInstruction;
+import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
+import jdk.vm.ci.meta.Value;
 
+import java.util.EnumSet;
+
+/**
+ * Value used in instruction does not satisfy it's
+ * {@link jdk.graal.compiler.lir.LIRInstruction.OperandFlag operand flags}, for example if an
+ * operand is a stack slot, but should only be a register.
+ */
 @SuppressWarnings("serial")
-public class MissingReferenceException extends RAVException {
-    public RAValue reference;
-    public AllocationState state;
-    public RAVInstruction.Op instruction;
-    public BlockVerifierState blockVerifierState;
+public class OperandFlagMismatchException extends RAVException {
+    public final RAVInstruction.Op instruction;
+    public final Value value;
+    public final EnumSet<LIRInstruction.OperandFlag> flags;
 
-    public MissingReferenceException(RAVInstruction.Op instruction, BasicBlock<?> block, RAValue reference, AllocationState state, BlockVerifierState blockVerifierState) {
-        super(getMessage(reference, state), instruction, block);
-        this.reference = reference;
-        this.state = state;
-        this.instruction = instruction;
-        this.blockVerifierState = new BlockVerifierState(block, blockVerifierState);
+    public OperandFlagMismatchException(RAVInstruction.Op op, BasicBlock<?> block, Value value, EnumSet<LIRInstruction.OperandFlag> flags) {
+        super(getErrorMessage(value, flags), op, block);
+        this.value = value;
+        this.flags = flags;
+        this.instruction = op;
     }
 
-    public static String getMessage(RAValue reference, AllocationState state) {
-        return "Missing reference in " + reference + " actually is " + state;
+    static String getErrorMessage(Value value, EnumSet<LIRInstruction.OperandFlag> flags) {
+        return "Value " + value + " does not satisfy operand flags " + flags.toString();
     }
 }

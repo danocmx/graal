@@ -32,10 +32,10 @@ import java.util.Set;
 /**
  * Conflicted allocation state - two or more instances have collided, and either of them can be
  * stored at said location, needs to be resolved by either overwriting the location with a new
- * {@link ValueAllocationState instance} or by a {@link ConflictResolver} implementation.
+ * {@link ValueAllocationState instance}.
  */
 public class ConflictedAllocationState extends AllocationState {
-    protected Set<ValueAllocationState> conflictedStates;
+    protected final Set<ValueAllocationState> conflictedStates;
 
     public ConflictedAllocationState() {
         this.conflictedStates = new EconomicHashSet<>();
@@ -61,13 +61,7 @@ public class ConflictedAllocationState extends AllocationState {
     }
 
     public boolean hasConflictedValue(ValueAllocationState valueAllocationState) {
-        for (var state : this.conflictedStates) {
-            if (state.getRAValue().equals(valueAllocationState.getRAValue())) {
-                return true;
-            }
-        }
-
-        return false;
+        return this.conflictedStates.contains(valueAllocationState);
     }
 
     /**
@@ -105,11 +99,13 @@ public class ConflictedAllocationState extends AllocationState {
         }
 
         if (other instanceof UnknownAllocationState) {
-            // Unknown state creates an Illegal ValueAllocationState inside it, because
-            // the unknown state is coming from a different predecessor to the same block,
-            // and it means that this location was not defined there, but it was defined in a
-            // different predecessor block, meaning it's now in a conflicted state, where
-            // it either is defined or it - should not be used in further blocks.
+            /*
+             * Unknown state creates an Illegal ValueAllocationState inside it, because the unknown
+             * state is coming from a different predecessor to the same block, and it means that
+             * this location was not defined there, but it was defined in a different predecessor
+             * block, meaning it's now in a conflicted state, where it either is defined or it -
+             * should not be used in further blocks.
+             */
             newlyConflictedState.addConflictedValue(ValueAllocationState.createUndefined(otherBlock));
         }
 
@@ -130,8 +126,13 @@ public class ConflictedAllocationState extends AllocationState {
      * @return Are both states conflicted?
      */
     @Override
-    public boolean equals(AllocationState other) {
-        return other.isConflicted();
+    public boolean equals(Object other) {
+        return other instanceof ConflictedAllocationState c && c.isConflicted();
+    }
+
+    @Override
+    public int hashCode() {
+        return conflictedStates.hashCode();
     }
 
     @Override

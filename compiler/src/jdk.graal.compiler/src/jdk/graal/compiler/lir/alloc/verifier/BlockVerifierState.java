@@ -32,6 +32,16 @@ import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.CastValue;
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.AliveConstraintViolationException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.CalleeSavedRegisterNotRetrievedException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.ConstantRematerializedToStackException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.JavaKindReferenceMismatchException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.KindsMismatchException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.MissingLocationException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.MissingReferenceException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.OperandFlagMismatchException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.ValueNotInRegisterException;
 import jdk.graal.compiler.lir.dfa.LocationMarker;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.ValueUtil;
@@ -49,29 +59,29 @@ public class BlockVerifierState {
     /**
      * Map maintaining mapping between locations and their state.
      */
-    public AllocationStateMap values;
+    public final AllocationStateMap values;
 
     /**
      * Register allocation config we use to check if only allocatable registers are the ones used.
      */
-    protected RegisterAllocationConfig registerAllocationConfig;
+    protected final RegisterAllocationConfig registerAllocationConfig;
 
     /**
      * Block this state pertains to.
      */
-    protected BasicBlock<?> block;
+    protected final BasicBlock<?> block;
 
-    protected CalleeSaveMap calleeSaveMap;
+    protected final CalleeSaveMap calleeSaveMap;
 
     public BlockVerifierState(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig,
-                              CalleeSaveMap calleeSaveMap) {
+                    CalleeSaveMap calleeSaveMap) {
         this.values = new AllocationStateMap(block, registerAllocationConfig);
         this.registerAllocationConfig = registerAllocationConfig;
         this.calleeSaveMap = calleeSaveMap;
         this.block = block;
     }
 
-    protected BlockVerifierState(BasicBlock<?> block, BlockVerifierState other) {
+    public BlockVerifierState(BasicBlock<?> block, BlockVerifierState other) {
         this.registerAllocationConfig = other.registerAllocationConfig;
         this.values = new AllocationStateMap(block, other.values);
         this.calleeSaveMap = other.calleeSaveMap;
@@ -83,8 +93,8 @@ public class BlockVerifierState {
     }
 
     /**
-     * Merge states of block and it's predecessor. This process creates a new state based on the
-     * contents of the predecessor, creating conflicts where current locations do not match.
+     * Merge states of block and it's predecessor. This process modifies the current state based on
+     * the contents of the predecessor, creating conflicts where current locations do not match.
      *
      * @param other Predecessor of this block
      * @return Was this state changed?
@@ -102,8 +112,10 @@ public class BlockVerifierState {
      */
     protected void checkStateValues(RAVInstruction.Op op) {
         if (!op.hasCompleteState()) {
-            // Some values are null after allocation because of stack slot allocator
-            // because it is skipped when iteration (StackLockValue).
+            /*
+             * Some values are null after allocation because of stack slot allocator because it is
+             * skipped when iteration (StackLockValue).
+             */
             return;
         }
 
@@ -142,9 +154,10 @@ public class BlockVerifierState {
 
         if (curr == null) {
             if (op.isJump()) {
-                // This can happen if a variable without a usage is passed in
-                // even when this variable acts as an alias to the next label,
-                // there's no usage, so no location.
+                /*
+                 * This can happen if a variable without a usage is passed in even when this
+                 * variable acts as an alias to the next label, there's no usage, so no location.
+                 */
                 return;
             }
 
@@ -153,8 +166,10 @@ public class BlockVerifierState {
 
         ValueKind<?> currKind = curr.getValue().getValueKind();
         if (values.castMap.containsKey(curr)) {
-            // The current location might have been cast by a previous move
-            // see isMoveKindChange comment
+            /*
+             * The current location might have been cast by a previous move see isMoveKindChange
+             * comment
+             */
             currKind = values.castMap.get(curr);
         }
 
@@ -359,8 +374,10 @@ public class BlockVerifierState {
             RAValue movedValue = valueAllocationState.getRAValue();
             if (!kindsEqual(movedValue, move.to)) {
                 if (isMoveKindChange(move, valueAllocationState)) {
-                    // This move changes the kind for destination location
-                    // see isMoveKindChange comment
+                    /*
+                     * This move changes the kind for destination location see isMoveKindChange
+                     * comment
+                     */
                     return;
                 }
 
@@ -371,9 +388,10 @@ public class BlockVerifierState {
 
     protected void checkValueMoveKinds(RAVInstruction.ValueMove move) {
         if (move instanceof RAVInstruction.VirtualLocationMove) {
-            // v28|DWORD = MOVE input: rax|BYTE moveKind: DWORD
-            // this type of instruction that is stripped from final
-            // LIR is not checked for kinds.
+            /*
+             * v28|DWORD = MOVE input: rax|BYTE moveKind: DWORD this type of instruction that is
+             * stripped from final LIR is not checked for kinds.
+             */
             return;
         }
 
@@ -451,8 +469,10 @@ public class BlockVerifierState {
 
                 var kind = frame.kinds[i];
                 if (JavaKind.Long.equals(kind)) {
-                    // Skipping long(s) because it can be a numeric value
-                    // or a derived reference / native pointer
+                    /*
+                     * Skipping long(s) because it can be a numeric value or a derived reference /
+                     * native pointer
+                     */
                     continue;
                 }
 
@@ -615,14 +635,17 @@ public class BlockVerifierState {
      */
     protected void updateWithOp(RAVInstruction.Op op) {
         if (op.references != null) {
-            // First we remove unknown references,
-            // then we define new values by the return value
+            /*
+             * First we remove unknown references, then we define new values by the return value
+             */
             updateWithSafePoint(op);
         }
 
         if (canCastOpToMove(op)) {
-            // Moves present before the allocation can also be treated
-            // same way the one inserted by the allocator
+            /*
+             * Moves present before the allocation can also be treated same way the one inserted by
+             * the allocator
+             */
             RAVInstruction.LocationMove locMove = castMove(op);
             updateWithLocationMove(locMove);
             return;
@@ -645,17 +668,21 @@ public class BlockVerifierState {
             RAValue variable = op.dests.orig[i];
 
             if (location.equals(variable)) {
-                // Only check register validity if it was changed by the register allocator,
-                // for example, rbp is used as input to start block and forbidden to be used by the
-                // allocator
+                /*
+                 * Only check register validity if it was changed by the register allocator, for
+                 * example, rbp is used as input to start block and forbidden to be used by the
+                 * allocator
+                 */
                 this.values.putWithoutRegCheck(location, new ValueAllocationState(variable, op, block));
             } else {
                 this.values.put(location, new ValueAllocationState(variable, op, block), op);
             }
         }
 
-        // For calls, temp lists all registers that are supposed to be caller saved,
-        // because sometimes there's a difference between RegisterConfig.getCallerSaveRegisters
+        /*
+         * For calls, temp lists all registers that are supposed to be caller saved, because
+         * sometimes there's a difference between RegisterConfig.getCallerSaveRegisters
+         */
         for (int i = 0; i < op.temp.count; i++) {
             var value = op.temp.curr[i];
             if (value.isIllegal()) {
@@ -729,10 +756,12 @@ public class BlockVerifierState {
                 continue;
             }
 
-            // Remove all references that are not present in the reference list;
-            // maybe it makes sense to keep registers that have live references,
-            // that are same as the one in the reference list? Because the list
-            // is expected to have stack slots and registers can retain the same references.
+            /*
+             * Remove all references that are not present in the reference list; maybe it makes
+             * sense to keep registers that have live references, that are same as the one in the
+             * reference list? Because the list is expected to have stack slots and registers can
+             * retain the same references.
+             */
             entry.setValue(new ValueAllocationState(new RAValue(Value.ILLEGAL), op, block));
         }
     }
@@ -783,14 +812,16 @@ public class BlockVerifierState {
         }
 
         for (var reg : registers) {
-            var regValue = (RARegister) RARegister.create(reg.asValue());
+            var regValue = (RAVRegister) RAVRegister.create(reg.asValue());
             var state = this.values.get(regValue);
             if (state instanceof ValueAllocationState valueAllocationState) {
                 var stateValue = valueAllocationState.getRAValue();
                 var calleeSavedValue = calleeSaveMap.getCalleeSavedValue(regValue);
                 if (stateValue.equals(calleeSavedValue) && stateValue.getLIRKind().equals(calleeSavedValue.getLIRKind())) {
-                    // The same symbol as register means the value was retrieved safely.
-                    // Kinds also need to match
+                    /*
+                     * The same symbol as register means the value was retrieved safely. Kinds also
+                     * need to match
+                     */
                     continue;
                 }
             }
@@ -809,10 +840,10 @@ public class BlockVerifierState {
     protected void updateWithValueMove(RAVInstruction.ValueMove valueMove) {
         var location = valueMove.getLocation();
         if (location.isVariable()) {
-            // Moves of this form:
-            // v4|QWORD[.] = MOVE input: v3|QWORD[.] moveKind: QWORD
-            // are handled by VariableSynonymMap.
-            // TestCase: BoxingTest.boxBoolean
+            /*
+             * Moves of this form: v4|QWORD[.] = MOVE input: v3|QWORD[.] moveKind: QWORD are handled
+             * by VariableSynonymMap. TestCase: BoxingTest.boxBoolean
+             */
             return;
         } else if (location.isRegister() && valueMove.variableOrConstant.isVariable()) {
             var regLoc = location.asRegister();
@@ -820,11 +851,12 @@ public class BlockVerifierState {
             var state = this.values.get(regLoc);
             if (state instanceof ValueAllocationState valueAllocationState) {
                 var value = valueAllocationState.getRAValue();
-                if (value instanceof CalleeSaveMap.CalleeSavedRegister) {
-                    // Virtual move in form r1 = VIRTMOVE v1, assigns variable
-                    // v1 to callee saved register; this needs to be saved
-                    // to properly check that callee saved value is retrieved
-                    // at exit point.
+                if (value instanceof CalleeSaveMap.CalleeSavedRAVRegister) {
+                    /*
+                     * Virtual move in form r1 = VIRTMOVE v1, assigns variable v1 to callee saved
+                     * register; this needs to be saved to properly check that callee saved value is
+                     * retrieved at exit point.
+                     */
                     calleeSaveMap.addValue(regLoc, valueMove.variableOrConstant.asVariable());
                 }
             }

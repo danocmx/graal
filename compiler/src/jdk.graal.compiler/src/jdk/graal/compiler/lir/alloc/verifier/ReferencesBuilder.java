@@ -106,7 +106,7 @@ public class ReferencesBuilder {
 
     class ReferenceMarker extends LocationMarker<ReferenceSet> {
         private final List<RegisterAttributes> registerAttributes;
-        protected Map<LIRInstruction, RAVInstruction.Base> preAllocMap;
+        protected final Map<LIRInstruction, RAVInstruction.Base> preAllocMap;
 
         protected ReferenceMarker(LIR lir, FrameMap frameMap, Map<LIRInstruction, RAVInstruction.Base> preAllocMap) {
             super(lir, frameMap);

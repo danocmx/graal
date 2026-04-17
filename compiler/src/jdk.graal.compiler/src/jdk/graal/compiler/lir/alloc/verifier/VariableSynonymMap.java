@@ -24,20 +24,16 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
-import jdk.graal.compiler.core.common.cfg.BasicBlock;
-import jdk.graal.compiler.core.common.cfg.BlockMap;
-import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.util.EconomicHashMap;
 
-import java.util.List;
 import java.util.Map;
 
 /**
  * Union-find data structure for synonyms between variables created by virtual moves.
  */
-public class VariableSynonymMap implements ConflictResolver {
-    protected Map<RAVariable, RAVariable> parent;
-    protected Map<RAVariable, Integer> rank;
+public class VariableSynonymMap {
+    protected final Map<RAVariable, RAVariable> parent;
+    protected final Map<RAVariable, Integer> rank;
 
     protected VariableSynonymMap() {
         parent = new EconomicHashMap<>();
@@ -79,66 +75,5 @@ public class VariableSynonymMap implements ConflictResolver {
 
     protected boolean isSynonymOf(RAVariable source, RAVariable target) {
         return find(source).equals(find(target));
-    }
-
-    @Override
-    public void prepare(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions) {
-        for (var blockId : lir.getBlocks()) {
-            var block = lir.getBlockById(blockId);
-            var instructions = blockInstructions.get(block);
-
-            for (var instruction : instructions) {
-                this.prepareFromInstr(instruction, block);
-            }
-        }
-    }
-
-    @Override
-    public void prepareFromInstr(RAVInstruction.Base instruction, BasicBlock<?> block) {
-        if (instruction instanceof RAVInstruction.ValueMove move) {
-            if (!move.variableOrConstant.isVariable() || !move.getLocation().isVariable()) {
-                return;
-            }
-
-            this.addSynonym(move.variableOrConstant.asVariable(), move.getLocation().asVariable());
-        }
-    }
-
-    @Override
-    public ValueAllocationState resolveValueState(RAVariable target, ValueAllocationState valueState, RAValue location) {
-        var stateValue = valueState.getRAValue();
-        if (!stateValue.isVariable()) {
-            return null;
-        }
-
-        if (!isSynonymOf(target, stateValue.asVariable())) {
-            return null;
-        }
-
-        return new ValueAllocationState(target, valueState.source, valueState.block);
-    }
-
-    @Override
-    public ValueAllocationState resolveConflictedState(RAVariable target, ConflictedAllocationState conflictedState, RAValue location) {
-        RAVInstruction.Base source = null;
-        BasicBlock<?> block = null;
-
-        var confStates = conflictedState.getConflictedStates();
-        for (var valueState : confStates) {
-            var stateValue = valueState.getRAValue();
-            if (!stateValue.isVariable()) {
-                return null;
-            }
-
-            if (!isSynonymOf(target, stateValue.asVariable())) {
-                return null;
-            }
-
-            // Currently take any source, but maybe it is better to track the original variable
-            source = valueState.source;
-            block = valueState.block;
-        }
-
-        return new ValueAllocationState(target, source, block);
     }
 }

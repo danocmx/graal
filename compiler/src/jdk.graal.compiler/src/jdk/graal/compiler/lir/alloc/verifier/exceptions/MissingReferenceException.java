@@ -22,30 +22,30 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
-import jdk.vm.ci.meta.AllocatableValue;
-import jdk.vm.ci.meta.JavaKind;
+import jdk.graal.compiler.lir.alloc.verifier.AllocationState;
+import jdk.graal.compiler.lir.alloc.verifier.BlockVerifierState;
+import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
+import jdk.graal.compiler.lir.alloc.verifier.RAValue;
 
 @SuppressWarnings("serial")
-public class JavaKindReferenceMismatchException extends RAVException {
-    public AllocatableValue orig;
-    public AllocatableValue curr;
-    public JavaKind kind;
+public class MissingReferenceException extends RAVException {
+    public final RAValue reference;
+    public final AllocationState state;
+    public final RAVInstruction.Op instruction;
+    public final BlockVerifierState blockVerifierState;
 
-    public JavaKindReferenceMismatchException(AllocatableValue orig, AllocatableValue curr, JavaKind kind, RAVInstruction.Base instruction, BasicBlock<?> block) {
-        super(getMessage(orig, curr, kind), instruction, block);
-        this.orig = orig;
-        this.curr = curr;
-        this.kind = kind;
+    public MissingReferenceException(RAVInstruction.Op instruction, BasicBlock<?> block, RAValue reference, AllocationState state, BlockVerifierState blockVerifierState) {
+        super(getMessage(reference, state), instruction, block);
+        this.reference = reference;
+        this.state = state;
+        this.instruction = instruction;
+        this.blockVerifierState = new BlockVerifierState(block, blockVerifierState);
     }
 
-    public static String getMessage(AllocatableValue orig, AllocatableValue curr, JavaKind kind) {
-        if (JavaKind.Object.equals(kind)) {
-            return orig + " -> " + curr + " not an object java kind when marked as a reference";
-        } else {
-            return orig + " -> " + curr + " is a reference but not marked as a reference";
-        }
+    public static String getMessage(RAValue reference, AllocationState state) {
+        return "Missing reference in " + reference + " actually is " + state;
     }
 }

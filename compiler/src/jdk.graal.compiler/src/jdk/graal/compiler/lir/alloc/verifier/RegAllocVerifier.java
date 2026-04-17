@@ -28,6 +28,8 @@ import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 
 import java.io.OutputStream;
 import java.util.ArrayDeque;
@@ -44,33 +46,33 @@ public class RegAllocVerifier {
     /**
      * Verifier IR that abstracts LIR instructions and marks moves inserted by the allocator.
      */
-    protected BlockMap<List<RAVInstruction.Base>> blockInstructions;
+    protected final BlockMap<List<RAVInstruction.Base>> blockInstructions;
 
     /**
      * State of the block on entry, calculated from its predecessors.
      */
-    protected BlockMap<BlockVerifierState> blockEntryStates;
+    protected final BlockMap<BlockVerifierState> blockEntryStates;
 
     /**
      * LIR necessary for to access the program graph.
      */
-    protected LIR lir;
+    protected final LIR lir;
 
     /**
      * Register Allocator config used for validating if the allocator uses a valid register.
      */
-    protected RegisterAllocationConfig registerAllocationConfig;
+    protected final RegisterAllocationConfig registerAllocationConfig;
 
     /**
      * Resolves locations for label variables by finding their first usage and walking back to the
      * defining label.
      */
-    protected FromUsageResolverGlobal fromUsageResolverGlobal;
+    protected final FromUsageResolverGlobal fromUsageResolverGlobal;
 
     /**
      * Track callee saved values from start block to exit blocks.
      */
-    protected CalleeSaveMap calleeSaveMap;
+    protected final CalleeSaveMap calleeSaveMap;
 
     public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig) {
         this.lir = lir;

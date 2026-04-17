@@ -35,19 +35,20 @@ import jdk.vm.ci.meta.Value;
  * accompanied by {@link RAVInstruction instruction} and {@link BasicBlock block} where it was
  * created.
  */
-public class ValueAllocationState extends AllocationState implements Cloneable {
-    protected RAValue value;
-    protected RAVInstruction.Base source;
-    protected BasicBlock<?> block;
+public class ValueAllocationState extends AllocationState {
+    protected final RAValue value;
+    protected final RAVInstruction.Base source;
+    protected final BasicBlock<?> block;
 
     public ValueAllocationState(RAValue raValue, RAVInstruction.Base source, BasicBlock<?> block) {
         var v = raValue.getValue();
         if (ValueUtil.isRegister(v) || LIRValueUtil.isVariable(v) || LIRValueUtil.isConstantValue(v) || LIRValueUtil.isStackSlotValue(v) || Value.ILLEGAL.equals(v)) {
-            // Here, we make sure that no new value class is used here, without consideration.
-
-            // StackSlot, RegisterValue is present in start block in label as predefined argument
-            // VirtualStackSlot is used for RESTORE_REGISTERS and SAVE_REGISTERS
-            // ConstantValue act as Variable
+            /*
+             * Here, we make sure that no new value class is used here, without consideration.
+             * StackSlot, RegisterValue is present in start block in label as predefined argument
+             * VirtualStackSlot is used for RESTORE_REGISTERS and SAVE_REGISTERS ConstantValue act
+             * as Variable
+             */
             this.value = raValue;
             this.source = source;
             this.block = block;
@@ -126,8 +127,16 @@ public class ValueAllocationState extends AllocationState implements Cloneable {
     }
 
     @Override
-    public boolean equals(AllocationState other) {
-        return other instanceof ValueAllocationState otherVal && this.value.equals(otherVal.getRAValue());
+    public boolean equals(Object other) {
+        if (other instanceof ValueAllocationState otherVal) {
+            if (isUndefinedFromBlock()) {
+                return otherVal.isUndefinedFromBlock() && otherVal.getBlock().equals(this.block);
+            } else {
+                return otherVal.getRAValue().equals(this.value);
+            }
+        }
+
+        return false;
     }
 
     @Override

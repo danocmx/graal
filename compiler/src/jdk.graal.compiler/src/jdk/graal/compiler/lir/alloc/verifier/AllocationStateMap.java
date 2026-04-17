@@ -27,6 +27,7 @@ package jdk.graal.compiler.lir.alloc.verifier;
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.InvalidRegisterUsedException;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
 import jdk.vm.ci.meta.ValueKind;
@@ -35,11 +36,13 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Mapping between a location and allocation state that stores one of these: -
- * {@link UnknownAllocationState unknown} - our null state, nothing was stored yet -
- * {@link ValueAllocationState value} - symbol that is stored at said location -
- * {@link ConflictedAllocationState conflicted} - set of Values that are supposed to be at same
- * location
+ * Mapping between a location and allocation state that stores one of these:
+ * <ul>
+ * <li>{@link UnknownAllocationState unknown} - our null state, nothing was stored yet</li>
+ * <li>{@link ValueAllocationState value} - symbol that is stored at said location</li>
+ * <li>{@link ConflictedAllocationState conflicted} - set of Values that are supposed to be at same
+ * location</li>
+ * </ul>
  *
  * <p>
  * Conflicts are resolved by assigning new {@link ValueAllocationState value} to same location.
@@ -49,23 +52,23 @@ import java.util.Set;
  * </p>
  */
 public class AllocationStateMap {
-    protected BasicBlock<?> block;
+    protected final BasicBlock<?> block;
 
     /**
      * Internal map maintaining the mapping.
      */
-    protected Map<RAValue, AllocationState> internalMap;
+    protected final Map<RAValue, AllocationState> internalMap;
 
     /**
      * Map of casts for locations that was forced by allocator-inserted move, see
      * {@link BlockVerifierState#isMoveKindChange}.
      */
-    protected Map<RAValue, ValueKind<LIRKind>> castMap;
+    protected final Map<RAValue, ValueKind<LIRKind>> castMap;
 
     /**
      * Register allocation config describing which registers can be used.
      */
-    protected RegisterAllocationConfig registerAllocationConfig;
+    protected final RegisterAllocationConfig registerAllocationConfig;
 
     public AllocationStateMap(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig) {
         internalMap = new EconomicHashMap<>();
@@ -167,14 +170,15 @@ public class AllocationStateMap {
     public boolean mergeWith(AllocationStateMap source) {
         boolean changed = false;
         for (var entry : source.internalMap.entrySet()) {
-            if (!this.internalMap.containsKey(entry.getKey())) {
+            var location = entry.getKey();
+            if (!this.internalMap.containsKey(location)) {
                 changed = true;
 
-                this.putWithoutRegCheck(entry.getKey(), UnknownAllocationState.INSTANCE);
+                this.putWithoutRegCheck(location, UnknownAllocationState.INSTANCE);
             }
 
-            var currentValue = this.internalMap.get(entry.getKey());
-            var result = this.internalMap.get(entry.getKey()).meet(entry.getValue(), source.block, this.block);
+            var currentValue = this.internalMap.get(location);
+            var result = currentValue.meet(entry.getValue(), source.block, this.block);
             if (!currentValue.equals(result)) {
                 changed = true;
             }

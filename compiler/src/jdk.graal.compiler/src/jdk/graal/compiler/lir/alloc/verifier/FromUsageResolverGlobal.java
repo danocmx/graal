@@ -67,35 +67,35 @@ public class FromUsageResolverGlobal {
     /**
      * LIR of the compilation unit we are resolving for.
      */
-    protected LIR lir;
+    protected final LIR lir;
 
     /**
      * Verifier IR.
      */
-    protected BlockMap<List<RAVInstruction.Base>> blockInstructions;
+    protected final BlockMap<List<RAVInstruction.Base>> blockInstructions;
 
     /**
      * Mapping of variables to the labels that defined them.
      */
-    public Map<RAVariable, RAVInstruction.Op> labelMap;
+    public final Map<RAVariable, RAVInstruction.Op> labelMap;
 
     /**
      * Mapping of operation to a set of variable for which this operation is a first usage.
      */
-    public Map<RAVInstruction.Op, Set<RAVariable>> firstUsages;
+    public final Map<RAVInstruction.Op, Set<RAVariable>> firstUsages;
 
     /**
      * Initial locations of label-defined variables to set them to when their first usage is found.
      */
-    public Map<RAVariable, RAValue> initialLocations;
+    public final Map<RAVariable, RAValue> initialLocations;
 
     /**
      * Variable and a block where it's coming from (last jump instruction), this variable is aliased
      * by the succeeding label, which needs to be resolved first, before this one can be.
      */
     class AliasPair {
-        RAVariable variable;
-        BasicBlock<?> block;
+        final RAVariable variable;
+        final BasicBlock<?> block;
 
         AliasPair(RAVariable variable, BasicBlock<?> block) {
             this.variable = variable;
@@ -107,17 +107,17 @@ public class FromUsageResolverGlobal {
      * Map of variables are aliases for a list of variables used in predecessor jump instructions.
      * First, the successor label variable needs to be resolved and after the predecessor labels.
      */
-    private Map<RAVariable, List<AliasPair>> aliasMap;
+    private final Map<RAVariable, List<AliasPair>> aliasMap;
 
     /**
      * Block map of their usage objects.
      */
-    protected BlockMap<BlockUsage> blockUsageMap;
+    protected final BlockMap<BlockUsage> blockUsageMap;
 
     /**
      * Set of blocks that have no successors.
      */
-    public Set<BasicBlock<?>> endBlocks;
+    public final Set<BasicBlock<?>> endBlocks;
 
     /**
      * Information about locations of variables found when traversing LIR, from the first usage,
@@ -227,10 +227,11 @@ public class FromUsageResolverGlobal {
                         continue;
                     }
 
-                    // Not yet processed, but also not in a worklist
-                    // this can happen when alias has been resolved and
-                    // predecessor block needs to be processed again
-                    // (the processed flag is set to false)
+                    /*
+                     * Not yet processed, but also not in a worklist this can happen when alias has
+                     * been resolved and predecessor block needs to be processed again (the
+                     * processed flag is set to false)
+                     */
                 }
             }
 
@@ -350,11 +351,11 @@ public class FromUsageResolverGlobal {
             }
 
             if (block.isLoopHeader()) {
-                // Here we handle loops without any exit that might
-                // also need a resolution of label variables, but
-                // are not reachable from endBlocks set, so we
-                // add predecessors of such loops that are part of the loop
-                // into the endBlocks set to process them.
+                /*
+                 * Here we handle loops without any exit that might also need a resolution of label
+                 * variables, but are not reachable from endBlocks set, so we add predecessors of
+                 * such loops that are part of the loop into the endBlocks set to process them.
+                 */
                 var loop = block.getLoop();
                 if (loop.getNaturalExits().isEmpty() && loop.getLoopExits().isEmpty()) {
                     var loopBlocks = loop.getBlocks();
@@ -465,8 +466,10 @@ public class FromUsageResolverGlobal {
                 jump.alive.curr[i] = location; // Set predecessor location
             }
 
-            // Variables that are passed into jumps without any other usage are resolved
-            // after variable, it's alias, in successor label.
+            /*
+             * Variables that are passed into jumps without any other usage are resolved after
+             * variable, it's alias, in successor label.
+             */
             if (aliasMap.containsKey(variable)) {
                 var aliasedVariables = aliasMap.get(variable);
                 for (var aliasPair : aliasedVariables) {

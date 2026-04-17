@@ -52,7 +52,7 @@ public class RAValue {
         }
 
         if (ValueUtil.isRegister(value)) {
-            return new RARegister(ValueUtil.asRegisterValue(value));
+            return new RAVRegister(ValueUtil.asRegisterValue(value));
         }
 
         if (LIRValueUtil.isConstantValue(value)) {
@@ -62,7 +62,7 @@ public class RAValue {
         return new RAValue(value);
     }
 
-    protected Value value;
+    protected final Value value;
 
     protected RAValue(Value value) {
         this.value = value;
@@ -96,8 +96,8 @@ public class RAValue {
         return false;
     }
 
-    public RARegister asRegister() {
-        return (RARegister) this;
+    public RAVRegister asRegister() {
+        return (RAVRegister) this;
     }
 
     public LIRKind getLIRKind() {

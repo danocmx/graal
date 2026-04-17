@@ -39,6 +39,8 @@ import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.StandardOp;
 import jdk.graal.compiler.lir.StateProcedure;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 import jdk.graal.compiler.lir.amd64.AMD64Move;
 import jdk.graal.compiler.lir.gen.LIRGenerationResult;
 import jdk.graal.compiler.lir.phases.LIRPhase;
@@ -71,13 +73,19 @@ import java.util.Set;
  */
 public class RegAllocVerifierPhase extends RegisterAllocationPhase {
     public static class Options {
-        @Option(help = "Verify that register allocation is indeed, correct", type = OptionType.Debug) public static final OptionKey<Boolean> EnableRAVerifier = new OptionKey<>(true);
+        // @formatter:off
+        @Option(help = "Verify that register allocation is indeed, correct", type = OptionType.Debug)
+        public static final OptionKey<Boolean> EnableRAVerifier = new OptionKey<>(true);
 
-        @Option(help = "Verify output of stack allocator with register allocator", type = OptionType.Debug) public static final OptionKey<Boolean> VerifyStackAllocator = new OptionKey<>(true);
+        @Option(help = "Verify output of stack allocator with register allocator", type = OptionType.Debug)
+        public static final OptionKey<Boolean> VerifyStackAllocator = new OptionKey<>(true);
 
-        @Option(help = "Collect reference map information to verify", type = OptionType.Debug) public static final OptionKey<Boolean> CollectReferences = new OptionKey<>(true);
+        @Option(help = "Collect reference map information to verify", type = OptionType.Debug)
+        public static final OptionKey<Boolean> CollectReferences = new OptionKey<>(true);
 
-        @Option(help = "Fail on first verification failure", type = OptionType.Debug) public static final OptionKey<Boolean> RAVFailOnFirst = new OptionKey<>(true);
+        @Option(help = "Fail on first verification failure", type = OptionType.Debug)
+        public static final OptionKey<Boolean> RAVFailOnFirst = new OptionKey<>(true);
+        // @formatter:on
     }
 
     /**
@@ -192,14 +200,14 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             RAVInstruction.Base previousInstr = null;
             for (var instruction : instructions) {
                 if (this.isVirtualMove(instruction)) {
-                    // Virtual moves (variable = MOV real register) are going to be removed by the
-                    // allocator, but we still need the information about which variables are
-                    // associated with real registers, and so we store them.
-                    // They are generally associated with other instructions
-                    // that's why we append them here to the previous instruction (for example,
-                    // Label
-                    // or Foreign Call) use these, if this instruction was deleted in the allocator,
-                    // then they will be missing too.
+                    /*
+                     * Virtual moves (variable = MOV real register) are going to be removed by the
+                     * allocator, but we still need the information about which variables are
+                     * associated with real registers, and so we store them. They are generally
+                     * associated with other instructions that's why we append them here to the
+                     * previous instruction (for example, Label or Foreign Call) use these, if this
+                     * instruction was deleted in the allocator, then they will be missing too.
+                     */
                     assert previousInstr != null;
 
                     var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
@@ -216,11 +224,13 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                 boolean speculative = false;
                 if (this.isSpeculativeMove(instruction)) {
                     speculative = true;
-                    // Speculative moves are in form ry = MOVE vx, which could be removed if
-                    // the variable ends up being allocated to the same register as ry.
-                    // If it was removed, we need to re-add it because it holds
-                    // important information about where the value of this variable
-                    // is placed - for label resolution after the label.
+                    /*
+                     * Speculative moves are in form ry = MOVE vx, which could be removed if the
+                     * variable ends up being allocated to the same register as ry. If it was
+                     * removed, we need to re-add it because it holds important information about
+                     * where the value of this variable is placed - for label resolution after the
+                     * label.
+                     */
                     assert previousInstr != null;
 
                     var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
@@ -272,21 +282,18 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
     }
 
     /**
-     * Normalizes the values in this input array pair to remove
-     * any variables that can be substituted for constants or
-     * variables that are aliased by different ones.
+     * Normalizes the values in this input array pair to remove any variables that can be
+     * substituted for constants or variables that are aliased by different ones.
      *
      * <p>
-     * We do this to make the internal verifier IR more consistent
-     * because sometimes a constant value can be used as an input,
-     * while at other times it's substituted behind a variable,
-     * which can also re-materialize later.
+     * We do this to make the internal verifier IR more consistent because sometimes a constant
+     * value can be used as an input, while at other times it's substituted behind a variable, which
+     * can also re-materialize later.
      * </p>
      *
      * <p>
-     * As for variable aliasing, sometimes a move is coalesced
-     * but the register allocator, but the mentioned of the
-     * alias variable still remain; we make sure to remove them.
+     * As for variable aliasing, sometimes a move is coalesced but the register allocator, but the
+     * mentioned of the alias variable still remain; we make sure to remove them.
      * </p>
      *
      * @param values Input array pair
@@ -464,7 +471,10 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
                     for (var readdedMove : readdedMoves) {
                         if (readdedMove.variableOrConstant.isVariable() && readdedMove.location.isVariable()) {
-                            // Coalesced variable-to-variable move, remove old references of the output variable
+                            /*
+                             * Coalesced variable-to-variable move, remove old references of the
+                             * output variable
+                             */
                             sMap.addSynonym(readdedMove.variableOrConstant.asVariable(), readdedMove.location.asVariable());
                         } else {
                             instructionList.add(readdedMove);
@@ -509,7 +519,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
         if (ValueUtil.isStackSlot(moveLocation)) {
             // Change vstack to allocated stack slot, because it was changed
-            valueMove.location.value = moveLocation;
+            valueMove.setLocation(RAValue.create(moveLocation));
         }
 
         return valueMove;

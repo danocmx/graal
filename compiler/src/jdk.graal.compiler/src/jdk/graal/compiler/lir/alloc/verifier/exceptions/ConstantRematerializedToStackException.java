@@ -22,36 +22,26 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
-import jdk.graal.compiler.core.common.cfg.BasicBlock;
+import jdk.graal.compiler.lir.alloc.verifier.RAConstant;
+import jdk.graal.compiler.lir.alloc.verifier.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.ValueAllocationState;
 
 /**
- * Violation of the alive inputs occurred, the same location was marked as alive argument as well as
- * temp or output.
+ * Constant was rematerialized to a stack location, which was forbidden for this variable/constant.
  */
 @SuppressWarnings("serial")
-public class AliveConstraintViolationException extends RAVException {
-    public RAVInstruction.Op instruction;
+public class ConstantRematerializedToStackException extends RAVException {
+    public final RAConstant constant;
+    public final RAValue location;
+    public final ValueAllocationState state;
 
-    /**
-     * Construct an AliveConstraintViolationException.
-     *
-     * @param instruction Instruction where violation occurred
-     * @param block Block where violation occurred
-     * @param location Location that is being shared
-     * @param asDest Alive location was used as an output
-     */
-    public AliveConstraintViolationException(RAVInstruction.Op instruction, BasicBlock<?> block, RAValue location, boolean asDest) {
-        super(AliveConstraintViolationException.getErrorMessage(location, asDest), instruction, block);
-        this.instruction = instruction;
-    }
+    public ConstantRematerializedToStackException(RAConstant constant, RAValue location, ValueAllocationState state) {
+        super("Constant " + constant + " cannot be rematerialized to stack location " + location, state.getSource(), state.getBlock());
 
-    static String getErrorMessage(RAValue location, boolean asDest) {
-        if (asDest) {
-            return "Location " + location + " used as both alive and output";
-        }
-
-        return "Location " + location + " used as both alive and temp";
+        this.constant = constant;
+        this.location = location;
+        this.state = state;
     }
 }
