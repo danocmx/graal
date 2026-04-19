@@ -30,6 +30,7 @@ import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.CastValue;
+import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.AliveConstraintViolationException;
@@ -165,15 +166,7 @@ public class BlockVerifierState {
         }
 
         ValueKind<?> currKind = curr.getValue().getValueKind();
-        if (values.castMap.containsKey(curr)) {
-            /*
-             * The current location might have been cast by a previous move see isMoveKindChange
-             * comment
-             */
-            currKind = values.castMap.get(curr);
-        }
-
-        if (!kindsEqual(orig.getValue().getValueKind(), currKind)) {
+        if (!kindsEqualBetweenPreAndPostAlloc(orig.getValue().getValueKind(), currKind)) {
             throw new KindsMismatchException(op, block, orig, curr, true);
         }
 
@@ -209,7 +202,14 @@ public class BlockVerifierState {
                 throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
             }
 
-            if (!kindsEqualFromState(orig, valAllocState.value)) {
+            LIRKind stateKind;
+            if (valAllocState.isCast()) {
+                stateKind = valAllocState.getCastKind();
+            } else {
+                stateKind = valAllocState.value.getLIRKind();
+            }
+
+            if (!kindsEqualFromState(orig, stateKind)) {
                 throw new KindsMismatchException(op, block, orig, valAllocState.value, false);
             }
 
@@ -238,10 +238,10 @@ public class BlockVerifierState {
         }
     }
 
-    protected boolean kindsEqual(RAValue orig, RAValue curr) {
+    protected boolean kindsEqualBetweenPreAndPostAlloc(RAValue orig, RAValue curr) {
         var origKind = orig.getValue().getValueKind();
         var currKind = curr.getValue().getValueKind();
-        return kindsEqual(origKind, currKind);
+        return kindsEqualBetweenPreAndPostAlloc(origKind, currKind);
     }
 
     /**
@@ -251,7 +251,7 @@ public class BlockVerifierState {
      * @param currInputKind Current location kind
      * @return Are they equal?
      */
-    protected boolean kindsEqual(ValueKind<?> origInputKind, ValueKind<?> currInputKind) {
+    protected boolean kindsEqualBetweenPreAndPostAlloc(ValueKind<?> origInputKind, ValueKind<?> currInputKind) {
         ValueKind<?> origKind;
         if (origInputKind instanceof LIRKindWithCast castKind) {
             origKind = castKind.getActualKind();
@@ -261,6 +261,9 @@ public class BlockVerifierState {
 
         ValueKind<?> currKind;
         if (currInputKind instanceof LIRKindWithCast castKind) {
+            // Original symbol was defined with the actual kind
+            // that is being cast from with current location,
+            // so we check kinds against that.
             currKind = castKind.getActualKind();
         } else {
             currKind = currInputKind;
@@ -277,17 +280,16 @@ public class BlockVerifierState {
      * </p>
      *
      * @param orig Original variable
-     * @param fromState Value stored in the state of the current location
+     * @param stateKind Kind of the current state
      * @return Are they equal?
      */
-    protected boolean kindsEqualFromState(RAValue orig, RAValue fromState) {
+    protected boolean kindsEqualFromState(RAValue orig, LIRKind stateKind) {
         ValueKind<?> origKind = orig.getValue().getValueKind();
-        ValueKind<?> currKind = fromState.getValue().getValueKind();
         if (LIRValueUtil.isCast(orig.getValue())) {
             origKind = LIRValueUtil.uncast(orig.getValue()).getValueKind();
         }
 
-        return origKind.equals(currKind);
+        return origKind.equals(stateKind);
     }
 
     /**
@@ -372,7 +374,7 @@ public class BlockVerifierState {
         AllocationState state = this.values.get(move.from);
         if (state instanceof ValueAllocationState valueAllocationState) {
             RAValue movedValue = valueAllocationState.getRAValue();
-            if (!kindsEqual(movedValue, move.to)) {
+            if (!kindsEqualBetweenPreAndPostAlloc(movedValue, move.to)) {
                 if (isMoveKindChange(move, valueAllocationState)) {
                     /*
                      * This move changes the kind for destination location see isMoveKindChange
@@ -395,7 +397,7 @@ public class BlockVerifierState {
             return;
         }
 
-        if (!kindsEqual(move.getLocation(), move.variableOrConstant)) {
+        if (!kindsEqualBetweenPreAndPostAlloc(move.getLocation(), move.variableOrConstant)) {
             throw new KindsMismatchException(move, block, move.getLocation(), move.variableOrConstant, false);
         }
     }
@@ -509,7 +511,7 @@ public class BlockVerifierState {
             var curr = op.temp.curr[i];
             var orig = op.temp.orig[i];
 
-            if (!kindsEqual(orig, curr)) {
+            if (!kindsEqualBetweenPreAndPostAlloc(orig, curr)) {
                 // Make sure the assigned register has the correct kind for temp.
                 throw new KindsMismatchException(op, block, orig, curr, true);
             }
@@ -611,6 +613,12 @@ public class BlockVerifierState {
         }
 
         var state = this.values.get(move.from);
+        if (state instanceof ValueAllocationState valueAllocationState) {
+            var movedValue = valueAllocationState.getRAValue();
+            if (!movedValue.getLIRKind().equals(move.to.getLIRKind())) {
+                state = new ValueAllocationState(valueAllocationState, move.to.getLIRKind());
+            }
+        }
 
         if (move.validateRegisters) {
             this.values.putClone(move.to, state, move);
@@ -618,12 +626,6 @@ public class BlockVerifierState {
             this.values.putWithoutRegCheck(move.to, state.clone());
         }
 
-        if (state instanceof ValueAllocationState valueAllocationState) {
-            var movedValue = valueAllocationState.getRAValue();
-            if (!kindsEqual(movedValue, move.to) && isMoveKindChange(move, valueAllocationState)) {
-                this.values.castMap.put(move.to, move.from.getLIRKind()); // Add a new cast
-            }
-        }
     }
 
     /**

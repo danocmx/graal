@@ -24,13 +24,11 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
-import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.InvalidRegisterUsedException;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
-import jdk.vm.ci.meta.ValueKind;
 
 import java.util.Map;
 import java.util.Set;
@@ -60,26 +58,18 @@ public class AllocationStateMap {
     protected final Map<RAValue, AllocationState> internalMap;
 
     /**
-     * Map of casts for locations that was forced by allocator-inserted move, see
-     * {@link BlockVerifierState#isMoveKindChange}.
-     */
-    protected final Map<RAValue, ValueKind<LIRKind>> castMap;
-
-    /**
      * Register allocation config describing which registers can be used.
      */
     protected final RegisterAllocationConfig registerAllocationConfig;
 
     public AllocationStateMap(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig) {
         internalMap = new EconomicHashMap<>();
-        castMap = new EconomicHashMap<>();
         this.block = block;
         this.registerAllocationConfig = registerAllocationConfig;
     }
 
     public AllocationStateMap(BasicBlock<?> block, AllocationStateMap other) {
         internalMap = new EconomicHashMap<>(other.internalMap);
-        castMap = new EconomicHashMap<>(other.castMap);
         registerAllocationConfig = other.registerAllocationConfig;
         this.block = block;
     }
@@ -125,7 +115,6 @@ public class AllocationStateMap {
      */
     public void putWithoutRegCheck(RAValue key, AllocationState state) {
         internalMap.put(key, state);
-        castMap.remove(key); // Always remove the cast when new value is inserted.
     }
 
     /**
@@ -186,7 +175,6 @@ public class AllocationStateMap {
             this.putWithoutRegCheck(entry.getKey(), result);
         }
 
-        castMap.putAll(source.castMap); // This should not affect the merge logic
         return changed;
     }
 

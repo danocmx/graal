@@ -24,6 +24,7 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
+import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.LIRValueUtil;
@@ -39,6 +40,8 @@ public class ValueAllocationState extends AllocationState {
     protected final RAValue value;
     protected final RAVInstruction.Base source;
     protected final BasicBlock<?> block;
+
+    protected LIRKind castKind;
 
     public ValueAllocationState(RAValue raValue, RAVInstruction.Base source, BasicBlock<?> block) {
         var v = raValue.getValue();
@@ -61,6 +64,20 @@ public class ValueAllocationState extends AllocationState {
         this.value = other.getRAValue();
         this.source = other.getSource();
         this.block = other.getBlock();
+        this.castKind = other.castKind;
+    }
+
+    public ValueAllocationState(ValueAllocationState other, LIRKind castKind) {
+        this(other);
+        this.castKind = castKind;
+    }
+
+    public boolean isCast() {
+        return castKind != null;
+    }
+
+    public LIRKind getCastKind() {
+        return castKind;
     }
 
     /**

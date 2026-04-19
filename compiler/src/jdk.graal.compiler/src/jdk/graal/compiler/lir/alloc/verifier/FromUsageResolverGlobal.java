@@ -24,10 +24,14 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
+import jdk.graal.compiler.core.GraalCompiler;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
+import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.StandardOp;
+import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
 
@@ -462,6 +466,32 @@ public class FromUsageResolverGlobal {
             for (int j = 0; j < block.getPredecessorCount(); j++) {
                 var pred = block.getPredecessorAt(j);
                 var jump = (RAVInstruction.Op) blockInstructions.get(pred).getLast();
+
+                var orig = jump.alive.orig[i];
+                if (!orig.getLIRKind().equals(location.getLIRKind())) {
+                    /*
+                     TestCase: DerivedOopTest
+                     <pre>
+                     B3:
+                       rdx|QWORD[*] = REGMOVE rcx|QWORD[.+]                <-- Type is cast here
+                       [] = JUMP [] [v8|QWORD[.+] -> rdx|QWORD[*]] []      <-- Needs the type change
+                     B5:
+                       [v12|QWORD[*] -> rdx|QWORD[*]] = LABEL [] [] []
+                       [] = BLACKHOLE [v12|QWORD[*] -> rdx|QWORD[*]] [] []
+                     </pre>
+                     */
+
+                    RAValue castOrig;
+                    if (orig.isVariable()) {
+                        castOrig = RAValue.create(new Variable(location.getLIRKind(), orig.asVariable().getVariable().index));
+                    } else if (orig.isConstant()) {
+                        castOrig = RAValue.create(new ConstantValue(location.getLIRKind(), orig.asConstant().getConstant()));
+                    } else {
+                        throw new GraalError("should not reach here: cannot cast orig " + orig);
+                    }
+
+                    jump.alive.orig[i] = castOrig;
+                }
 
                 jump.alive.curr[i] = location; // Set predecessor location
             }

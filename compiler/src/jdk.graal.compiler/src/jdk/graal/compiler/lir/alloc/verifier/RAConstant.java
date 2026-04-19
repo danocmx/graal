@@ -25,14 +25,21 @@
 package jdk.graal.compiler.lir.alloc.verifier;
 
 import jdk.graal.compiler.lir.ConstantValue;
+import jdk.vm.ci.meta.Constant;
 
 public class RAConstant extends RAValue {
+    protected ConstantValue value;
     public final boolean canRematerializeToStack;
 
     public RAConstant(ConstantValue value, boolean canRematerializeToStack) {
         super(value);
 
+        this.value = value;
         this.canRematerializeToStack = canRematerializeToStack;
+    }
+
+    public Constant getConstant() {
+        return value.getConstant();
     }
 
     @Override
