@@ -30,7 +30,6 @@ import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.CastValue;
-import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.AliveConstraintViolationException;
@@ -171,13 +170,18 @@ public class BlockVerifierState {
         }
 
         AllocationState state = this.values.get(curr);
-        if (orig.equals(curr)) {
+        if (orig.equals(curr) || ValueUtil.isStackSlot(curr.getValue()) && LIRValueUtil.isVirtualStackSlot(orig.getValue())) {
             // For these cases we do not consider checking state taking the original
             // register as a symbol, because there are too many cases when this does
             // not work, for example, RETURN with rax tends to contain the actual
             // generated variable instead of rax symbol, or NEAR_FOREIGN_CALL
             // keeps its own registers before and after allocation, but those
             // can also contain different variable symbols.
+
+            if (state.isConflicted()) {
+                throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
+            }
+
             return;
         }
 
@@ -284,7 +288,7 @@ public class BlockVerifierState {
      * @return Are they equal?
      */
     protected boolean kindsEqualFromState(RAValue orig, LIRKind stateKind) {
-        ValueKind<?> origKind = orig.getValue().getValueKind();
+        ValueKind<?> origKind = orig.getLIRKind();
         if (LIRValueUtil.isCast(orig.getValue())) {
             origKind = LIRValueUtil.uncast(orig.getValue()).getValueKind();
         }
@@ -319,8 +323,6 @@ public class BlockVerifierState {
             }
         } else if (instruction instanceof RAVInstruction.LocationMove move) {
             checkLocationMoveKinds(move);
-        } else if (instruction instanceof RAVInstruction.ValueMove move) {
-            checkValueMoveKinds(move);
         }
     }
 
@@ -341,7 +343,7 @@ public class BlockVerifierState {
                         continue; // Undefined in branch
                     }
 
-                    if (!valAllocState.getRAValue().getLIRKind().isValue()) {
+                    if (!valAllocState.isReference()) {
                         continue; // State holds a reference
                     }
 
@@ -374,78 +376,10 @@ public class BlockVerifierState {
         AllocationState state = this.values.get(move.from);
         if (state instanceof ValueAllocationState valueAllocationState) {
             RAValue movedValue = valueAllocationState.getRAValue();
-            if (!kindsEqualBetweenPreAndPostAlloc(movedValue, move.to)) {
-                if (isMoveKindChange(move, valueAllocationState)) {
-                    /*
-                     * This move changes the kind for destination location see isMoveKindChange
-                     * comment
-                     */
-                    return;
-                }
-
+            if (!movedValue.getLIRKind().getPlatformKind().equals(move.to.getLIRKind().getPlatformKind())) {
                 throw new KindsMismatchException(move, block, move.to, movedValue, false);
             }
         }
-    }
-
-    protected void checkValueMoveKinds(RAVInstruction.ValueMove move) {
-        if (move instanceof RAVInstruction.VirtualLocationMove) {
-            /*
-             * v28|DWORD = MOVE input: rax|BYTE moveKind: DWORD this type of instruction that is
-             * stripped from final LIR is not checked for kinds.
-             */
-            return;
-        }
-
-        if (!kindsEqualBetweenPreAndPostAlloc(move.getLocation(), move.variableOrConstant)) {
-            throw new KindsMismatchException(move, block, move.getLocation(), move.variableOrConstant, false);
-        }
-    }
-
-    /**
-     * Does this move change the ValueKind? This happens for when a derived reference gets changed
-     * to a normal reference, we make sure that the underlying platform kind is equal and then allow
-     * change from derived ([.+]) to normal reference ([*]).
-     *
-     * <p>
-     * Currently only allowed if the moved state is {@link ValueAllocationState}.
-     * </p>
-     *
-     * <p>
-     * The standard setup is as this:
-     *
-     * <pre>
-     * (v8|QWORD[.+] -> rcx|QWORD[.+]) = ADD (x: rcx|QWORD, y: r8|QWORD[.]) size: QWORD
-     * rdx|QWORD[*] = MOVE input: rcx|QWORD[.+] moveKind: QWORD // MoveResolver resolve mapping
-     * JUMP ~outgoingValues: [v8|QWORD[.+] -> rdx|QWORD[*]] destination: B1 -> B3 isThreadedJump: false
-     * </pre>
-     *
-     * Add calculates the derived reference address, move casts it to LIRKind ref, and value is used
-     * in the JUMP to the next block, where pre-allocation symbol (variable) has derived ref, but
-     * location has reference.
-     * </p>
-     *
-     * This is then changed in {@link BlockVerifierState#checkOperand} to verify that the kind is
-     * correct.
-     *
-     * @param move Move that facilitates the change
-     * @param state Current value state this happens for
-     * @return if this move changes the kinds
-     */
-    protected boolean isMoveKindChange(RAVInstruction.LocationMove move, ValueAllocationState state) {
-        var moveValueKind = state.getRAValue().getLIRKind();
-        var toKind = move.to.getLIRKind();
-        var fromKind = move.from.getLIRKind();
-
-        if (!moveValueKind.getPlatformKind().equals(toKind.getPlatformKind())) {
-            return false;
-        }
-
-        if (!moveValueKind.getPlatformKind().equals(fromKind.getPlatformKind())) {
-            return false;
-        }
-
-        return moveValueKind.isDerivedReference() && !toKind.isValue() && fromKind.isDerivedReference();
     }
 
     /**
@@ -625,7 +559,6 @@ public class BlockVerifierState {
         } else {
             this.values.putWithoutRegCheck(move.to, state.clone());
         }
-
     }
 
     /**
@@ -653,6 +586,29 @@ public class BlockVerifierState {
             return;
         }
 
+        /*
+         * For calls, temp lists all registers that are supposed to be caller saved, because
+         * sometimes there's a difference between RegisterConfig.getCallerSaveRegisters
+         *
+         * These registers need to be set to unknown before output registers, in case some of them
+         * are also set as an output.
+         */
+        for (int i = 0; i < op.temp.count; i++) {
+            var value = op.temp.curr[i];
+            if (value.isIllegal()) {
+                continue;
+            }
+
+            // We cannot believe the contents of registers used as temp, thus we need to reset.
+            RAValue location = op.temp.curr[i];
+
+            if (op.temp.orig[i].equals(location)) {
+                this.values.putWithoutRegCheck(location, UnknownAllocationState.INSTANCE);
+            } else {
+                this.values.put(location, UnknownAllocationState.INSTANCE, op);
+            }
+        }
+
         for (int i = 0; i < op.dests.count; i++) {
             if (op.dests.orig[i].isIllegal()) {
                 continue; // Safe to ignore when destination is illegal value, not when used.
@@ -678,26 +634,6 @@ public class BlockVerifierState {
                 this.values.putWithoutRegCheck(location, new ValueAllocationState(variable, op, block));
             } else {
                 this.values.put(location, new ValueAllocationState(variable, op, block), op);
-            }
-        }
-
-        /*
-         * For calls, temp lists all registers that are supposed to be caller saved, because
-         * sometimes there's a difference between RegisterConfig.getCallerSaveRegisters
-         */
-        for (int i = 0; i < op.temp.count; i++) {
-            var value = op.temp.curr[i];
-            if (value.isIllegal()) {
-                continue;
-            }
-
-            // We cannot believe the contents of registers used as temp, thus we need to reset.
-            RAValue location = op.temp.curr[i];
-
-            if (op.temp.orig[i].equals(location)) {
-                this.values.putWithoutRegCheck(location, UnknownAllocationState.INSTANCE);
-            } else {
-                this.values.put(location, UnknownAllocationState.INSTANCE, op);
             }
         }
 
@@ -750,7 +686,7 @@ public class BlockVerifierState {
             }
 
             var valueAllocState = (ValueAllocationState) state;
-            if (Value.ILLEGAL.equals(valueAllocState.getValue()) || valueAllocState.getValue().getValueKind(LIRKind.class).isValue()) {
+            if (Value.ILLEGAL.equals(valueAllocState.getValue()) || valueAllocState.getRAValue().getLIRKind().isValue()) {
                 continue; // Not a reference, continue
             }
 
@@ -847,7 +783,7 @@ public class BlockVerifierState {
              * by VariableSynonymMap. TestCase: BoxingTest.boxBoolean
              */
             return;
-        } else if (location.isRegister() && valueMove.variableOrConstant.isVariable()) {
+        } else if (location.isRegister() && valueMove.constant.isVariable()) {
             var regLoc = location.asRegister();
 
             var state = this.values.get(regLoc);
@@ -859,13 +795,13 @@ public class BlockVerifierState {
                      * register; this needs to be saved to properly check that callee saved value is
                      * retrieved at exit point.
                      */
-                    calleeSaveMap.addValue(regLoc, valueMove.variableOrConstant.asVariable());
+                    calleeSaveMap.addValue(regLoc, valueMove.constant.asVariable());
                 }
             }
 
-            this.values.putWithoutRegCheck(valueMove.getLocation(), new ValueAllocationState(valueMove.variableOrConstant, valueMove, block));
+            this.values.putWithoutRegCheck(valueMove.getLocation(), new ValueAllocationState(valueMove.constant, valueMove, block));
         } else {
-            var state = new ValueAllocationState(valueMove.variableOrConstant, valueMove, block);
+            var state = new ValueAllocationState(valueMove.constant, valueMove, block);
             if (valueMove.validateRegisters) {
                 this.values.put(valueMove.getLocation(), state, valueMove);
             } else {

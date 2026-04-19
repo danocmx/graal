@@ -42,6 +42,10 @@ public class RAConstant extends RAValue {
         return value.getConstant();
     }
 
+    public ConstantValue getConstantValue() {
+        return value;
+    }
+
     @Override
     public boolean isConstant() {
         return true;

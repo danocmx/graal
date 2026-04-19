@@ -38,6 +38,7 @@ import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.StandardOp;
 import jdk.graal.compiler.lir.StateProcedure;
+import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
@@ -185,6 +186,16 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         }
     }
 
+    class OutValue {
+        int idx;
+        RAVInstruction.Op op;
+
+        OutValue(int idx, RAVInstruction.Op op) {
+            this.idx = idx;
+            this.op = op;
+        }
+    }
+
     /**
      * Save instruction before allocation to keep track of symbols used in instructions.
      *
@@ -197,57 +208,71 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             BasicBlock<?> block = lir.getBlockById(blockId);
             ArrayList<LIRInstruction> instructions = lir.getLIRforBlock(block);
 
+            Map<RAValue, RAValue> inputMap = new EconomicHashMap<>();
+            Map<RAValue, OutValue> outputMap = new EconomicHashMap<>();
+
             RAVInstruction.Base previousInstr = null;
             for (var instruction : instructions) {
-                if (this.isVirtualMove(instruction)) {
-                    /*
-                     * Virtual moves (variable = MOV real register) are going to be removed by the
-                     * allocator, but we still need the information about which variables are
-                     * associated with real registers, and so we store them. They are generally
-                     * associated with other instructions that's why we append them here to the
-                     * previous instruction (for example, Label or Foreign Call) use these, if this
-                     * instruction was deleted in the allocator, then they will be missing too.
-                     */
-                    assert previousInstr != null;
-
-                    var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
-                    var location = valueMov.getInput();
-                    var variable = LIRValueUtil.asVariable(valueMov.getResult());
-
-                    var virtualMove = new RAVInstruction.VirtualLocationMove(instruction, variable, location);
-                    previousInstr.addVirtualMove(virtualMove);
-
-                    // No need to store virtual move here, it is stored into previous instruction.
-                    continue;
-                }
-
                 boolean speculative = false;
-                if (this.isSpeculativeMove(instruction)) {
-                    speculative = true;
-                    /*
-                     * Speculative moves are in form ry = MOVE vx, which could be removed if the
-                     * variable ends up being allocated to the same register as ry. If it was
-                     * removed, we need to re-add it because it holds important information about
-                     * where the value of this variable is placed - for label resolution after the
-                     * label.
-                     */
-                    assert previousInstr != null;
-
+                if (instruction.isValueMoveOp()) {
                     var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
-                    var variable = LIRValueUtil.asVariable(valueMov.getInput());
-                    var register = valueMov.getResult();
+                    var input = valueMov.getInput();
+                    var result = valueMov.getResult();
 
-                    var virtualMove = new RAVInstruction.ValueMove(instruction, variable, register);
-                    previousInstr.addSpeculativeMove(virtualMove);
+                    if (LIRValueUtil.isVariable(result) && isLocation(input)) {
+                        // Virtual moves: v1 = MOVE rsi
+                        // we use these to assign symbols back to instructions
+                        // that have none, for example, label in B0
+                        // [rsi|DWORD -> rsi|DWORD] = LABEL
+                        // v1 = MOVE rsi
+                        // Becomes [v1|DWORD -> rsi|DWORD] = LABEL
+
+                        var locValue = RAValue.create(input);
+                        var outputValue = outputMap.get(locValue);
+                        assert outputValue != null;
+
+                        outputValue.op.dests.orig[outputValue.idx] = RAValue.create(result);
+                        outputMap.remove(locValue);
+                        continue;
+                    }
+
+                    if (LIRValueUtil.isVariable(input)) {
+                        Variable variable = LIRValueUtil.asVariable(input);
+                        if (isLocation(result)) {
+                            var regKind = result.getValueKind();
+                            var varKind = input.getValueKind();
+                            if (!regKind.equals(varKind)) {
+                                variable = new Variable(regKind, variable.index);
+                            }
+
+                            // What if type cast information missing?
+                            inputMap.put(RAValue.create(result), RAValue.create(variable));
+                        } else {
+                            speculative = true;
+                            var virtualMove = new RAVInstruction.CoalescedMove(instruction, result, variable);
+
+                            assert previousInstr != null;
+                            previousInstr.addSpeculativeMove(virtualMove);
+                        }
+                    }
                 }
 
-                var opRAVInstr = new RAVInstruction.Op(instruction);
+                if (instruction.isLoadConstantOp()) {
+                    var loadConstOp = StandardOp.LoadConstantOp.asLoadConstantOp(instruction);
+                    var location = RAValue.create(loadConstOp.getResult());
+                    if (location.isLocation()) {
+                        var constant = new ConstantValue(loadConstOp.getResult().getValueKind(LIRKind.class), loadConstOp.getConstant());
+                        inputMap.put(location, RAValue.create(constant));
+                    }
+                }
 
-                instruction.forEachInput(opRAVInstr.uses.copyOriginalProc);
-                instruction.forEachOutput(opRAVInstr.dests.copyOriginalProc);
-                instruction.forEachTemp(opRAVInstr.temp.copyOriginalProc);
-                instruction.forEachAlive(opRAVInstr.alive.copyOriginalProc);
-                instruction.forEachState(opRAVInstr.stateValues.copyOriginalProc);
+                var op = new RAVInstruction.Op(instruction);
+
+                instruction.forEachInput(op.uses.copyOriginalProc);
+                instruction.forEachOutput(op.dests.copyOriginalProc);
+                instruction.forEachTemp(op.temp.copyOriginalProc);
+                instruction.forEachAlive(op.alive.copyOriginalProc);
+                instruction.forEachState(op.stateValues.copyOriginalProc);
                 instruction.forEachState(new StateProcedure() {
                     @Override
                     public void doState(LIRFrameState state) {
@@ -264,21 +289,50 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                             }
 
                             var values = frame.values.clone();
-                            opRAVInstr.bcFrames.add(new RAVInstruction.StateValuePair(values, kinds));
+                            op.bcFrames.add(new RAVInstruction.StateValuePair(values, kinds));
                             frame = frame.caller();
                         }
                     }
                 });
 
-                preallocMap.put(instruction, opRAVInstr);
+                for (int i = 0; i < op.dests.count; i++) {
+                    var orig = op.dests.orig[i];
+                    if (orig.isLocation()) {
+                        outputMap.put(orig, new OutValue(i, op));
+                    }
+                }
+
+                changeOriginalInputToVariable(inputMap, op.uses);
+                changeOriginalInputToVariable(inputMap, op.alive);
+
+                preallocMap.put(instruction, op);
 
                 if (!speculative) {
-                    previousInstr = opRAVInstr;
+                    previousInstr = op;
                 }
             }
+
+            assert inputMap.isEmpty();
         }
 
         return preallocMap;
+    }
+
+    protected void changeOriginalInputToVariable(Map<RAValue, RAValue> inputMap, RAVInstruction.ValueArrayPair values) {
+        for (int i = 0; i < values.count; i++) {
+            var orig = values.orig[i];
+            if (!orig.isLocation()) {
+                continue;
+            }
+
+            var inputVar = inputMap.get(orig);
+            if (inputVar == null) {
+                continue;
+            }
+
+            values.orig[i] = inputVar;
+            inputMap.remove(orig);
+        }
     }
 
     /**
@@ -392,8 +446,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         VariableSynonymMap sMap = new VariableSynonymMap();
         Map<RAVariable, RAValue> cMap = new EconomicHashMap<>();
 
-        Map<RAVariable, RAVInstruction.Op> definedVariables = new EconomicHashMap<>();
-        var presentInstructions = preprocessAllocatedInstructions(lir, preallocMap, definedVariables);
+        var presentInstructions = preprocessAllocatedInstructions(lir, preallocMap);
 
         BlockMap<List<RAVInstruction.Base>> blockInstructions = new BlockMap<>(lir.getControlFlowGraph());
         for (var blockId : lir.getBlocks()) {
@@ -466,25 +519,12 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                 }
 
                 var speculativeMoves = opRAVInstr.getSpeculativeMoveList();
-                if (!speculativeMoves.isEmpty()) {
-                    var readdedMoves = handleSpeculativeMoves(opRAVInstr, presentInstructions, definedVariables);
-
-                    for (var readdedMove : readdedMoves) {
-                        if (readdedMove.variableOrConstant.isVariable() && readdedMove.location.isVariable()) {
-                            /*
-                             * Coalesced variable-to-variable move, remove old references of the
-                             * output variable
-                             */
-                            sMap.addSynonym(readdedMove.variableOrConstant.asVariable(), readdedMove.location.asVariable());
-                        } else {
-                            instructionList.add(readdedMove);
-                        }
+                for (var move : speculativeMoves) {
+                    if (presentInstructions.contains(move.lirInstruction)) {
+                        continue;
                     }
-                }
 
-                var virtualMoves = opRAVInstr.getVirtualMoveList();
-                for (var virtMove : virtualMoves) {
-                    instructionList.add(fixOldValueMove(virtMove));
+                    sMap.addSynonym(move.srcVariable, move.dstVariable);
                 }
             }
 
@@ -531,10 +571,9 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      *
      * @param lir LIR
      * @param preallocMap Map of instructions before allocation
-     * @param definedVariables Output map, set defined variables here
      * @return Set of instructions present after allocation
      */
-    protected Set<LIRInstruction> preprocessAllocatedInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, Map<RAVariable, RAVInstruction.Op> definedVariables) {
+    protected Set<LIRInstruction> preprocessAllocatedInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap) {
         Set<LIRInstruction> presentInstructions = new EconomicHashSet<>();
         for (var blockId : lir.getBlocks()) {
             BasicBlock<?> block = lir.getBlockById(blockId);
@@ -548,59 +587,12 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     for (int i = 0; i < op.dests.count; i++) {
                         if (op.dests.orig[i].isVariable()) {
                             var variable = op.dests.orig[i].asVariable();
-                            definedVariables.put(variable, op);
                         }
                     }
                 }
             }
         }
         return presentInstructions;
-    }
-
-    /**
-     * Handle speculative moves that should be re-added back to the IR to keep verification
-     * information in-tact, based on instructions present after allocation and variables defined by
-     * them.
-     *
-     * @param op Op that holds these speculative instructions
-     * @param presentInstructions Instructions present in the IR in the form of a Map
-     * @param definedVariables Variables already defined
-     * @return List of speculative moves that need to be added back
-     */
-    protected List<RAVInstruction.ValueMove> handleSpeculativeMoves(RAVInstruction.Op op, Set<LIRInstruction> presentInstructions, Map<RAVariable, RAVInstruction.Op> definedVariables) {
-        List<RAVInstruction.ValueMove> toAdd = new ArrayList<>();
-        for (var speculativeMove : op.getSpeculativeMoveList()) {
-            if (presentInstructions.contains(speculativeMove.getLIRInstruction())) {
-                continue;
-            }
-
-            if (!speculativeMove.getLocation().isVariable() && speculativeMove.variableOrConstant.isVariable()) {
-                var variable = speculativeMove.variableOrConstant.asVariable();
-                var variableDefInstr = definedVariables.get(variable);
-                if (variableDefInstr == null) {
-                    continue;
-                }
-
-                if (variableDefInstr.lirInstruction instanceof StandardOp.LabelOp && variableDefInstr.lirInstruction == op.lirInstruction) {
-                    for (int i = 0; i < op.dests.count; i++) {
-                        var orig = op.dests.orig[i];
-                        if (!orig.isVariable() || op.dests.curr[i] != null) {
-                            continue;
-                        }
-
-                        // Add speculative instruction location back to the label
-                        // where it's missing, only when speculative move is part
-                        // of said label.
-                        op.dests.curr[i] = speculativeMove.getLocation();
-                    }
-                }
-
-                continue;
-            }
-
-            toAdd.add(fixOldValueMove(speculativeMove));
-        }
-        return toAdd;
     }
 
     /**
@@ -648,48 +640,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         return null;
     }
 
-    /**
-     * Determines if instruction is a virtual {@link RAVInstruction.ValueMove move}, a virtual move
-     * is a move instruction that moves a real register value into a variable, which is something
-     * that will always get removed from the final allocated IR.
-     *
-     * <p>
-     * This information is important to the verification process and needs to be part of the
-     * Verifier IR.
-     * </p>
-     *
-     * @param instruction LIR instruction we are looking at
-     * @return true, if instruction is a virtual move, otherwise false
-     */
-    protected boolean isVirtualMove(LIRInstruction instruction) {
-        if (!instruction.isValueMoveOp()) {
-            return false;
-        }
-
-        var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
-        var input = valueMov.getInput();
-        return (ValueUtil.isRegister(input) || LIRValueUtil.isStackSlotValue(input)) && LIRValueUtil.isVariable(valueMov.getResult());
-    }
-
-    /**
-     * Determines if a {@link RAVInstruction.ValueMove move} is speculative - it could potentially
-     * be removed, but hold important information to the verification process.
-     *
-     * <p>
-     * For example, this happens for a move between two variables, and after allocation locations
-     * are equal, making the move redundant.
-     * </p>
-     *
-     * @param instruction {@link LIRInstruction instruction} we are looking at
-     * @return true, if instruction is a speculative move, otherwise false
-     */
-    protected boolean isSpeculativeMove(LIRInstruction instruction) {
-        if (!instruction.isValueMoveOp()) {
-            return false;
-        }
-
-        var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
-        var result = valueMov.getResult(); // Result could be variable or register
-        return (ValueUtil.isRegister(result) || LIRValueUtil.isVariable(result)) && LIRValueUtil.isVariable(valueMov.getInput());
+    protected boolean isLocation(Value value) {
+        return LIRValueUtil.isStackSlotValue(value) || ValueUtil.isRegister(value);
     }
 }

@@ -28,6 +28,7 @@ import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.vm.ci.code.ValueUtil;
 import jdk.vm.ci.meta.Value;
+import jdk.vm.ci.meta.ValueKind;
 
 /**
  * Wrapper around Value to change how indexing in data structures like {@link java.util.Map} or
@@ -37,6 +38,11 @@ import jdk.vm.ci.meta.Value;
  * Values are indexed without their {@link LIRKind kind} associated with them, this is necessary for
  * {@link AllocationStateMap} because locations can change kinds and still be associated with one
  * key/value pair in the map.
+ * </p>
+ *
+ * <p>
+ * Some value types like {@link RAConstant constants}, {@link RAVariable variables}, {@link RAVRegister registers}
+ * have their own subclass, to use them as types for keys and values in collections.
  * </p>
  */
 public class RAValue {
@@ -101,7 +107,19 @@ public class RAValue {
     }
 
     public LIRKind getLIRKind() {
+        if (isIllegal() || value.getValueKind().equals(ValueKind.Illegal)) {
+            return LIRKind.Illegal;
+        }
+
         return value.getValueKind(LIRKind.class);
+    }
+
+    public boolean isLocation() {
+        return isRegister() || isStackSlot();
+    }
+
+    public boolean isStackSlot() {
+        return LIRValueUtil.isStackSlotValue(value);
     }
 
     @Override

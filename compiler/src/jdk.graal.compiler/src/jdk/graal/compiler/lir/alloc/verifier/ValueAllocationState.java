@@ -80,6 +80,14 @@ public class ValueAllocationState extends AllocationState {
         return castKind;
     }
 
+    public boolean isReference() {
+        if (isCast()) {
+            return !castKind.isValue();
+        }
+
+        return value.getLIRKind().isValue();
+    }
+
     /**
      * Create an illegal value allocation state, used as a substitute for
      * {@link UnknownAllocationState unknown} when creating a {@link ConflictedAllocationState
