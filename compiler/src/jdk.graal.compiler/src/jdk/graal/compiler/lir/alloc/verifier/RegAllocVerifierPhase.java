@@ -186,6 +186,9 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         }
     }
 
+    /**
+     * Which operation generated register as a symbol and the index of it, in the output array.
+     */
     class OutValue {
         int idx;
         RAVInstruction.Op op;
@@ -213,30 +216,43 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
             RAVInstruction.Base previousInstr = null;
             for (var instruction : instructions) {
-                boolean speculative = false;
+                boolean outputSpeculative = false;
+                boolean inputSpeculative = false;
                 if (instruction.isValueMoveOp()) {
                     var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
                     var input = valueMov.getInput();
                     var result = valueMov.getResult();
 
                     if (LIRValueUtil.isVariable(result) && isLocation(input)) {
-                        // Virtual moves: v1 = MOVE rsi
-                        // we use these to assign symbols back to instructions
-                        // that have none, for example, label in B0
-                        // [rsi|DWORD -> rsi|DWORD] = LABEL
-                        // v1 = MOVE rsi
-                        // Becomes [v1|DWORD -> rsi|DWORD] = LABEL
-
+                        /*
+                         * Speculative move that outputs a new variable from a concrete location. We
+                         * assign the variable to the instruction that outputs this register, but
+                         * not a symbol.
+                         */
                         var locValue = RAValue.create(input);
                         var outputValue = outputMap.get(locValue);
-                        assert outputValue != null;
+                        if (outputValue != null) {
+                            outputValue.op.dests.orig[outputValue.idx] = RAValue.create(result);
+                            outputMap.remove(locValue);
+                            continue;
+                        }
 
-                        outputValue.op.dests.orig[outputValue.idx] = RAValue.create(result);
-                        outputMap.remove(locValue);
-                        continue;
+                        outputSpeculative = true;
                     }
 
                     if (LIRValueUtil.isVariable(input)) {
+                        /*
+                         * Speculative move that has an existing variable is its input, output can
+                         * be either a variable or concrete location.
+                         *
+                         * If a concrete location is input, then it can be used to assign a symbol
+                         * to an instruction that has none for this register.
+                         *
+                         * If it is a variable to variable move, then we save it, in case it was
+                         * coalesced.
+                         */
+                        inputSpeculative = true;
+
                         Variable variable = LIRValueUtil.asVariable(input);
                         if (isLocation(result)) {
                             var regKind = result.getValueKind();
@@ -248,7 +264,6 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                             // What if type cast information missing?
                             inputMap.put(RAValue.create(result), RAValue.create(variable));
                         } else {
-                            speculative = true;
                             var virtualMove = new RAVInstruction.CoalescedMove(instruction, result, variable);
 
                             assert previousInstr != null;
@@ -261,6 +276,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     var loadConstOp = StandardOp.LoadConstantOp.asLoadConstantOp(instruction);
                     var location = RAValue.create(loadConstOp.getResult());
                     if (location.isLocation()) {
+                        // Speculative input move that sets variable to concrete location.
                         var constant = new ConstantValue(loadConstOp.getResult().getValueKind(LIRKind.class), loadConstOp.getConstant());
                         inputMap.put(location, RAValue.create(constant));
                     }
@@ -295,30 +311,38 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                     }
                 });
 
-                for (int i = 0; i < op.dests.count; i++) {
-                    var orig = op.dests.orig[i];
-                    if (orig.isLocation()) {
-                        outputMap.put(orig, new OutValue(i, op));
-                    }
-                }
-
-                changeOriginalInputToVariable(inputMap, op.uses);
-                changeOriginalInputToVariable(inputMap, op.alive);
+                changeOriginalInputToVariable(inputMap, op.uses, outputSpeculative);
+                changeOriginalInputToVariable(inputMap, op.alive, outputSpeculative);
 
                 preallocMap.put(instruction, op);
 
-                if (!speculative) {
+                if (!inputSpeculative) {
+                    for (int i = 0; i < op.dests.count; i++) {
+                        var orig = op.dests.orig[i];
+                        if (orig.isLocation()) {
+                            outputMap.put(orig, new OutValue(i, op));
+                        }
+                    }
+
                     previousInstr = op;
                 }
             }
-
-            assert inputMap.isEmpty();
         }
 
         return preallocMap;
     }
 
-    protected void changeOriginalInputToVariable(Map<RAValue, RAValue> inputMap, RAVInstruction.ValueArrayPair values) {
+    /**
+     * Changes input of an instruction that is a concrete location (before allocation) to
+     * variable/constant from input mapping, that is created by speculative moves before this
+     * instruction.
+     *
+     * @param inputMap Map of location to variable assigned from speculative input move
+     * @param values Input values
+     * @param outputSpeculative If this input is from a speculative instruction that creates a new
+     *            variable
+     */
+    protected void changeOriginalInputToVariable(Map<RAValue, RAValue> inputMap, RAVInstruction.ValueArrayPair values, boolean outputSpeculative) {
         for (int i = 0; i < values.count; i++) {
             var orig = values.orig[i];
             if (!orig.isLocation()) {
@@ -331,7 +355,12 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             }
 
             values.orig[i] = inputVar;
-            inputMap.remove(orig);
+
+            if (!outputSpeculative) {
+                // Do not remove from input map if this operation could be removed.
+                // This value can be re-used.
+                inputMap.remove(orig);
+            }
         }
     }
 
@@ -361,16 +390,28 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                 continue;
             }
 
+            RAValue substitute;
             var variable = value.asVariable();
             if (constantMap.containsKey(variable)) {
-                values.orig[i] = constantMap.get(variable);
+                substitute = constantMap.get(variable);
+            } else if (synonymMap.parent.containsKey(variable)) {
+                var synonym = synonymMap.parent.get(value.asVariable());
+                substitute = constantMap.getOrDefault(synonym, synonym);
+            } else {
                 continue;
             }
 
-            var synonym = synonymMap.parent.get(value.asVariable());
-            if (synonym != null) {
-                values.orig[i] = constantMap.getOrDefault(synonym, synonym);
+            if (!values.orig[i].getLIRKind().equals(substitute.getLIRKind())) {
+                /*
+                 * We cast the kind here, because we expect preceeding move to cast the value inside
+                 * the state, for example, rax|QWORD = MOVE rax|QWORD[.] size: QWORD should cast the
+                 * contents of rax to be QWORD, to be consistent with this, we need to change the
+                 * kind here.
+                 */
+                substitute = RAValue.cast(substitute, values.orig[i]);
             }
+
+            values.orig[i] = substitute;
         }
     }
 
@@ -609,7 +650,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             if (instruction.isLoadConstantOp()) {
                 var constatLoad = StandardOp.LoadConstantOp.asLoadConstantOp(instruction);
                 var constant = constatLoad.getConstant();
-                var result = constatLoad.getResult(); // Can be RegisterValue or VirtualStackSlot
+                var result = constatLoad.getResult(); // Concrete location
 
                 // Constant materialization result
                 return new RAVInstruction.ValueMove(instruction, new ConstantValue(result.getValueKind(), constant), result);
@@ -630,7 +671,8 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             return new RAVInstruction.RegMove(instruction, ValueUtil.asRegisterValue(input), ValueUtil.asRegisterValue(result));
         } else if (LIRValueUtil.isStackSlotValue(input) && LIRValueUtil.isStackSlotValue(result)) {
             if (valueMov instanceof AMD64Move.AMD64StackMove stackMove) {
-                // Cannot access the isScratchAlwaysZero to see if backup slot is used
+                // Cannot access the isScratchAlwaysZero to see if a backup slot is used.
+                // We use the backup slot to set the allocation state to unknown.
                 return new RAVInstruction.StackMove(instruction, input, result, stackMove.getBackupSlot());
             }
 

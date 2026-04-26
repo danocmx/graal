@@ -41,6 +41,9 @@ public class ValueAllocationState extends AllocationState {
     protected final RAVInstruction.Base source;
     protected final BasicBlock<?> block;
 
+    /**
+     * Kind that this value was cast to, this is done by move instruction.
+     */
     protected LIRKind castKind;
 
     public ValueAllocationState(RAValue raValue, RAVInstruction.Base source, BasicBlock<?> block) {
@@ -76,8 +79,17 @@ public class ValueAllocationState extends AllocationState {
         return castKind != null;
     }
 
-    public LIRKind getCastKind() {
-        return castKind;
+    /**
+     * Get the lir kind of this state, can be cast by a move.
+     *
+     * @return Value kind or cast kind
+     */
+    public LIRKind getKind() {
+        if (isCast()) {
+            return castKind;
+        }
+
+        return value.getLIRKind();
     }
 
     public boolean isReference() {
@@ -85,7 +97,7 @@ public class ValueAllocationState extends AllocationState {
             return !castKind.isValue();
         }
 
-        return value.getLIRKind().isValue();
+        return !value.getLIRKind().isValue();
     }
 
     /**

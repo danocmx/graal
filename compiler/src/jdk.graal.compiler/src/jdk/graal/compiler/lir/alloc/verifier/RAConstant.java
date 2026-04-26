@@ -46,6 +46,23 @@ public class RAConstant extends RAValue {
         return value;
     }
 
+    public boolean equals(Object other) {
+        if (other instanceof RAConstant raConstant) {
+            return value.getConstant().equals(raConstant.value.getConstant());
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return value.getConstant().hashCode();
+    }
+
+    @Override
+    public String toString() {
+        return value.getConstant().toString();
+    }
+
     @Override
     public boolean isConstant() {
         return true;

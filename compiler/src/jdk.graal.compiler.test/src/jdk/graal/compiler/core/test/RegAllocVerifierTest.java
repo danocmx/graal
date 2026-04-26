@@ -126,52 +126,14 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             }
         }
 
-        protected void modifyFirstMatch(LIR lir, BlockMap<List<RAVInstruction.Base>> instructions, AllocationContext context) {
-            for (var blockId : lir.getBlocks()) {
-                var block = lir.getBlockById(blockId);
-                var instructionsForBlock = instructions.get(block);
-
-                for (var instruction : instructionsForBlock) {
-                    if (isCandidate(instruction)) {
-                        changeCandidate(lir, instruction);
-                        return;
-                    }
-                }
-            }
-        }
-
-        protected void modifyRandomCandidate(LIR lir, BlockMap<List<RAVInstruction.Base>> instructions, AllocationContext context) {
-            List<RAVInstruction.Base> candidates = new ArrayList<>();
-            for (var blockId : lir.getBlocks()) {
-                var block = lir.getBlockById(blockId);
-                var instructionsForBlock = instructions.get(block);
-                for (var instruction : instructionsForBlock) {
-                    if (isCandidate(instruction)) {
-                        candidates.add(instruction);
-                    }
-                }
-            }
-
-            if (candidates.isEmpty()) {
-                return;
-            }
-
-            var random = new Random();
-            var idx = random.nextInt(candidates.size());
-            var candidate = candidates.get(idx);
-            changeCandidate(lir, candidate);
-        }
-
-        protected boolean isCandidate(RAVInstruction.Base instruction) {
-            return false;
-        }
-
-        protected void changeCandidate(LIR lir, RAVInstruction.Base instruction) {
-
-        }
+        private int lastVariableId = -1;
 
         protected RAVariable createNewVariable(LIR lir, ValueKind<?> kind) {
-            var newVariable = new Variable(kind, lir.numVariables() + 1);
+            if (lastVariableId == -1) {
+                lastVariableId = lir.numVariables();
+            }
+
+            var newVariable = new Variable(kind, ++lastVariableId);
             return (RAVariable) RAValue.create(newVariable);
         }
 
@@ -194,7 +156,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             var lirInstruction = new StandardOp.NoOp(null, 0);
 
             if (symbol.isConstant()) {
-                return new RAVInstruction.ValueMove(lirInstruction, symbol.getValue(), location.getValue());
+                return new RAVInstruction.ValueMove(lirInstruction, symbol.asConstant().getConstantValue(), location.getValue());
             }
 
             var op = new RAVInstruction.Op(lirInstruction);
@@ -303,7 +265,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
                     for (int i = 0; i < op.dests.count; i++) {
                         var curr = op.dests.curr[i];
                         var orig = op.dests.orig[i];
-                        if (curr.equals(orig) || !curr.isVariable()) {
+                        if (curr.equals(orig) || !orig.isVariable()) {
                             continue;
                         }
 
@@ -321,42 +283,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             }
 
             return instructions;
-        }
-
-        @Override
-        protected boolean isCandidate(RAVInstruction.Base instruction) {
-            if (instruction instanceof RAVInstruction.Op op) {
-                if (op.isLabel()) {
-                    return false;
-                }
-
-                for (int i = 0; i < op.dests.count; i++) {
-                    if (!op.dests.orig[i].isVariable()) {
-                        continue;
-                    }
-
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        protected void changeCandidate(LIR lir, RAVInstruction.Base instruction) {
-            var op = (RAVInstruction.Op) instruction;
-            for (int i = 0; i < op.dests.count; i++) {
-                if (!op.dests.orig[i].isVariable()) {
-                    continue;
-                }
-
-                var variable = op.dests.orig[i].asVariable();
-                var newVariable = createNewVariable(lir, variable.getLIRKind());
-
-                op.dests.orig[i] = newVariable;
-
-                this.originalVariable = variable;
-                this.newVariable = newVariable;
-            }
         }
     }
 
@@ -435,61 +361,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             }
 
             return null;
-        }
-
-        @Override
-        protected boolean isCandidate(RAVInstruction.Base instruction) {
-            switch (instruction) {
-                case RAVInstruction.Op op -> {
-                    for (int i = 0; i < op.dests.count; i++) {
-                        var curr = op.dests.curr[i];
-                        var orig = op.dests.orig[i];
-                        if (curr.equals(orig)) {
-                            continue;
-                        }
-
-                        if (curr.isRegister()) {
-                            return true;
-                        }
-                    }
-                }
-                case RAVInstruction.LocationMove move -> {
-                    if (move.to.isRegister()) {
-                        return true;
-                    }
-                }
-                default -> {
-                }
-            }
-
-            return false;
-        }
-
-        @Override
-        protected void changeCandidate(LIR lir, RAVInstruction.Base instruction) {
-            switch (instruction) {
-                case RAVInstruction.Op op -> {
-                    for (int i = 0; i < op.dests.count; i++) {
-                        var curr = op.dests.curr[i];
-                        var orig = op.dests.orig[i];
-                        if (curr.equals(orig)) {
-                            continue;
-                        }
-
-                        if (curr.isRegister()) {
-                            ignoredReg = curr.asRegister().getRegister();
-                            return;
-                        }
-                    }
-                }
-                case RAVInstruction.LocationMove move -> {
-                    if (move.to.isRegister()) {
-                        ignoredReg = move.to.asRegister().getRegister();
-                    }
-                }
-                default -> {
-                }
-            }
         }
     }
 
@@ -644,12 +515,33 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
                         continue;
                     }
 
+                    if (values.curr[0].isIllegal()) {
+                        continue;
+                    }
+
                     location = op.alive.curr[0];
-                    op.dests.curr[0] = location;
+                    values.curr[0] = location;
 
                     return instructions;
                 }
             }
+
+            // Force the scenario if none was found.
+            var lirInstruction = new StandardOp.NoOp(null, 0);
+            var op = new RAVInstruction.Op(lirInstruction);
+            op.temp = new RAVInstruction.ValueArrayPair(1);
+            op.alive = new RAVInstruction.ValueArrayPair(1);
+
+            location = getUnusedValue(lir, instructions, context);
+            op.temp.curr[0] = location;
+            op.temp.orig[0] = location;
+            op.temp.operandFlags = new ArrayList<>(List.of(EnumSet.of(REG, STACK)));
+            op.alive.curr[0] = location;
+            op.alive.orig[0] = location;
+            op.alive.operandFlags = new ArrayList<>(List.of(EnumSet.of(REG, STACK)));
+
+            var b0Instructions = instructions.get(0);
+            b0Instructions.add(b0Instructions.size() - 1, op);
 
             return instructions;
         }
@@ -679,7 +571,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
     abstract class ConflictPhase extends RAVPhaseWrapper {
         RAVariable targetVariable;
-        Set<RAValue> conflictVariables;
+        Set<ValueAllocationState> conflictVariables;
 
         @Override
         protected BlockMap<List<RAVInstruction.Base>> getVerifierInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext ctx) {
@@ -697,7 +589,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
                 var variable = createNewVariable(lir);
                 var op = createSymbolSpawnOp(variable, conflictLocation);
 
-                conflictVariables.add(variable);
+                conflictVariables.add(new ValueAllocationState(variable, null, null));
                 instructionsForPred.add(idx, op);
             }
 
@@ -980,53 +872,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
             return instructions;
         }
-
-        @Override
-        protected boolean isCandidate(RAVInstruction.Base instruction) {
-            if (instruction instanceof RAVInstruction.Op op) {
-                for (int i = 0; i < op.uses.count; i++) {
-                    var curr = op.uses.curr[i];
-                    var orig = op.uses.orig[i];
-
-                    if (orig.equals(curr)) {
-                        continue;
-                    }
-
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        @Override
-        protected void changeCandidate(LIR lir, RAVInstruction.Base instruction) {
-            var op = (RAVInstruction.Op) instruction;
-            for (int i = 0; i < op.uses.count; i++) {
-                var curr = op.uses.curr[i];
-                var orig = op.uses.orig[i];
-
-                if (orig.equals(curr)) {
-                    continue;
-                }
-
-                EnumSet<LIRInstruction.OperandFlag> opFlags = EnumSet.noneOf(LIRInstruction.OperandFlag.class);
-                opFlags.addAll(op.uses.operandFlags.get(i));
-
-                if (curr.isRegister()) {
-                    opFlags.remove(REG);
-                } else if (LIRValueUtil.isStackSlotValue(curr.getValue())) {
-                    opFlags.remove(STACK);
-                } else if (LIRValueUtil.isConstantValue(curr.getValue())) {
-                    opFlags.remove(LIRInstruction.OperandFlag.CONST);
-                } else {
-                    continue;
-                }
-
-                op.uses.operandFlags.set(i, opFlags);
-                return;
-            }
-        }
     }
 
     class ForceMissingLocationExceptionPhase extends RAVPhaseWrapper {
@@ -1059,39 +904,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             }
 
             return instructions;
-        }
-
-        // @Override
-        protected boolean isCandidate(RAVInstruction.Base instruction, RAVInstruction.Base previousInstruction) {
-            if (instruction instanceof RAVInstruction.Op op) {
-                for (int i = 0; i < op.uses.count; i++) {
-                    var curr = op.uses.curr[i];
-                    var orig = op.uses.orig[i];
-
-                    if (orig.equals(curr)) {
-                        continue;
-                    }
-
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        @Override
-        protected void changeCandidate(LIR lir, RAVInstruction.Base instruction) {
-            var op = (RAVInstruction.Op) instruction;
-            for (int i = 0; i < op.uses.count; i++) {
-                var curr = op.uses.curr[i];
-                var orig = op.uses.orig[i];
-
-                if (orig.equals(curr)) {
-                    continue;
-                }
-
-                op.uses.curr[i] = null;
-                break;
-            }
         }
     }
 
@@ -1229,14 +1041,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             }
             return false;
         }
-
-        // @Override
-        // protected boolean isCandidate(RAVInstruction.Base instruction, RAVInstruction.Base
-        // previousInstruction) {
-        // // How would we handle this with multiple candidates?
-
-        // return super.isCandidate(instruction, previousInstruction);
-        // }
     }
 
     @Override
@@ -1562,12 +1366,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         Assert.assertTrue(vnrException.state.isConflicted());
 
         var confState = (ConflictedAllocationState) vnrException.state;
-        var conflictedStates = confState.getConflictedStates();
-        Assert.assertEquals(2, conflictedStates.size());
-        // for (var state : conflictedStates) {
-        // Assert.assertTrue(state.getRAValue().equals(loopConflictPhase. ||
-        // state.getRAValue().equals(loopConflictPhase.targetVariable));
-        // }
+        Assert.assertEquals(confState.getConflictedStates(), loopConflictPhase.conflictVariables);
     }
 
     @Test

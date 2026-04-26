@@ -25,7 +25,11 @@
 package jdk.graal.compiler.lir.alloc.verifier;
 
 import jdk.graal.compiler.core.common.LIRKind;
+import jdk.graal.compiler.core.common.LIRKindWithCast;
+import jdk.graal.compiler.debug.GraalError;
+import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.LIRValueUtil;
+import jdk.graal.compiler.lir.Variable;
 import jdk.vm.ci.code.ValueUtil;
 import jdk.vm.ci.meta.Value;
 import jdk.vm.ci.meta.ValueKind;
@@ -41,8 +45,9 @@ import jdk.vm.ci.meta.ValueKind;
  * </p>
  *
  * <p>
- * Some value types like {@link RAConstant constants}, {@link RAVariable variables}, {@link RAVRegister registers}
- * have their own subclass, to use them as types for keys and values in collections.
+ * Some value types like {@link RAConstant constants}, {@link RAVariable variables},
+ * {@link RAVRegister registers} have their own subclass, to use them as types for keys and values
+ * in collections.
  * </p>
  */
 public class RAValue {
@@ -66,6 +71,28 @@ public class RAValue {
         }
 
         return new RAValue(value);
+    }
+
+    protected static boolean kindsEqual(RAValue orig, RAValue location) {
+        var origKind = orig.getLIRKind();
+        var currKind = location.getLIRKind();
+        if (currKind instanceof LIRKindWithCast castKind) {
+            currKind = (LIRKind) castKind.getActualKind();
+        }
+
+        return origKind.equals(currKind);
+    }
+
+    public static RAValue cast(RAValue symbol, RAValue kindSrc) {
+        RAValue castOrig;
+        if (symbol.isVariable()) {
+            castOrig = RAValue.create(new Variable(kindSrc.getLIRKind(), symbol.asVariable().getVariable().index));
+        } else if (symbol.isConstant()) {
+            castOrig = RAValue.create(new ConstantValue(kindSrc.getLIRKind(), symbol.asConstant().getConstant()));
+        } else {
+            throw new GraalError("should not reach here: cannot cast orig " + symbol);
+        }
+        return castOrig;
     }
 
     protected final Value value;

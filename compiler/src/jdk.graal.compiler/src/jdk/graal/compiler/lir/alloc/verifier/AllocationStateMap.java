@@ -79,15 +79,7 @@ public class AllocationStateMap {
     }
 
     public AllocationState get(RAValue key) {
-        return this.get(key, AllocationState.getDefault());
-    }
-
-    public AllocationState get(RAValue key, AllocationState defaultValue) {
-        var state = internalMap.get(key);
-        if (state == null) {
-            return defaultValue;
-        }
-        return state;
+        return this.internalMap.getOrDefault(key, AllocationState.getDefault());
     }
 
     /**
@@ -160,19 +152,37 @@ public class AllocationStateMap {
         boolean changed = false;
         for (var entry : source.internalMap.entrySet()) {
             var location = entry.getKey();
+            var incomingState = entry.getValue();
             if (!this.internalMap.containsKey(location)) {
+                if (incomingState.isUnknown()) {
+                    continue; // Unknown and Unknown can be skipped
+                }
+
                 changed = true;
 
-                this.putWithoutRegCheck(location, UnknownAllocationState.INSTANCE);
+                this.putWithoutRegCheck(location, incomingState.clone());
+                continue;
             }
 
-            var currentValue = this.internalMap.get(location);
-            var result = currentValue.meet(entry.getValue(), source.block, this.block);
-            if (!currentValue.equals(result)) {
+            var currentState = this.internalMap.get(location);
+            var resultState = currentState.meet(incomingState, source.block, this.block);
+            if (!currentState.equals(resultState)) {
                 changed = true;
             }
 
-            this.putWithoutRegCheck(entry.getKey(), result);
+            this.putWithoutRegCheck(location, resultState);
+        }
+
+        // Process remaining locations from our map that have not yet been processed.
+        for (var entry : this.internalMap.entrySet()) {
+            var location = entry.getKey();
+            if (source.internalMap.containsKey(location) || entry.getValue().isUnknown()) {
+                // Only care about unprocessed locations
+                continue;
+            }
+
+            changed = true;
+            entry.setValue(get(location).meet(UnknownAllocationState.INSTANCE, source.block, this.block));
         }
 
         return changed;

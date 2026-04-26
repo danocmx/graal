@@ -533,10 +533,9 @@ public class RAVInstruction {
     }
 
     /**
-     * Move between two variables that has been coalesced into one location,
-     * we keep this information to replace the destination variable with
-     * the source variable, it is never part of the verifier IR, so
-     * it is not subclass of {@link Base}.
+     * Move between two variables that has been coalesced into one location, we keep this
+     * information to replace the destination variable with the source variable, it is never part of
+     * the verifier IR, so it is not subclass of {@link Base}.
      */
     public static class CoalescedMove {
         public final LIRInstruction lirInstruction;

@@ -170,26 +170,27 @@ public class BlockVerifierState {
         }
 
         AllocationState state = this.values.get(curr);
-        if (orig.equals(curr) || ValueUtil.isStackSlot(curr.getValue()) && LIRValueUtil.isVirtualStackSlot(orig.getValue())) {
-            // For these cases we do not consider checking state taking the original
-            // register as a symbol, because there are too many cases when this does
-            // not work, for example, RETURN with rax tends to contain the actual
-            // generated variable instead of rax symbol, or NEAR_FOREIGN_CALL
-            // keeps its own registers before and after allocation, but those
-            // can also contain different variable symbols.
-
-            if (state.isConflicted()) {
-                throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
-            }
-
+        if (orig.equals(curr)) {
+            /*
+             * Whenever both the original symbol and current location are equal, we do not do any
+             * further checking, as there is no symbol to check. This happens for instructions like
+             * function calls, which have their inputs set to concrete locations before allocation.
+             *
+             * The state here can be unknown, some value or in conflict.
+             */
             return;
         }
 
         if (ValueUtil.isStackSlot(curr.getValue()) && LIRValueUtil.isVirtualStackSlot(orig.getValue())) {
-            // TestCase: IntegerDivRemCanonicalizationTest
-            // instruction r10|QWORD = STACKLEA slot: stack:80|ILLEGAL[*] in B0
-            // had vstack:0, which is not mentioned in first label or elsewhere
-            // so symbol vstack:0 won't be found
+            /*
+             * For the same reason as a previous statement, if vstack slot was present before
+             * allocation and stack allocator have run, then we need to check for a vstack and stack
+             * combination. Both are considered locations, and so we do not have a symbol to check
+             * for.
+             *
+             * Test case IntegerDivRemCanonicalizationTest, has instruction: r10|QWORD = STACKLEA
+             * slot: stack:80|ILLEGAL[*] in B0, where vstack:0 was present before stack allocation.
+             */
             return;
         }
 
@@ -206,14 +207,7 @@ public class BlockVerifierState {
                 throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
             }
 
-            LIRKind stateKind;
-            if (valAllocState.isCast()) {
-                stateKind = valAllocState.getCastKind();
-            } else {
-                stateKind = valAllocState.value.getLIRKind();
-            }
-
-            if (!kindsEqualFromState(orig, stateKind)) {
+            if (!kindsEqualFromState(orig, valAllocState)) {
                 throw new KindsMismatchException(op, block, orig, valAllocState.value, false);
             }
 
@@ -284,10 +278,11 @@ public class BlockVerifierState {
      * </p>
      *
      * @param orig Original variable
-     * @param stateKind Kind of the current state
+     * @param valAllocState State we are checking against
      * @return Are they equal?
      */
-    protected boolean kindsEqualFromState(RAValue orig, LIRKind stateKind) {
+    protected boolean kindsEqualFromState(RAValue orig, ValueAllocationState valAllocState) {
+        LIRKind stateKind = valAllocState.getKind();
         ValueKind<?> origKind = orig.getLIRKind();
         if (LIRValueUtil.isCast(orig.getValue())) {
             origKind = LIRValueUtil.uncast(orig.getValue()).getValueKind();
@@ -343,7 +338,7 @@ public class BlockVerifierState {
                         continue; // Undefined in branch
                     }
 
-                    if (!valAllocState.isReference()) {
+                    if (valAllocState.isReference()) {
                         continue; // State holds a reference
                     }
 
@@ -358,7 +353,7 @@ public class BlockVerifierState {
             }
 
             var valAllocState = (ValueAllocationState) state;
-            if (!valAllocState.getRAValue().getLIRKind().isValue()) {
+            if (valAllocState.isReference()) {
                 continue; // State holds a reference
             }
 
@@ -686,7 +681,7 @@ public class BlockVerifierState {
             }
 
             var valueAllocState = (ValueAllocationState) state;
-            if (Value.ILLEGAL.equals(valueAllocState.getValue()) || valueAllocState.getRAValue().getLIRKind().isValue()) {
+            if (Value.ILLEGAL.equals(valueAllocState.getValue()) || !valueAllocState.isReference()) {
                 continue; // Not a reference, continue
             }
 
@@ -776,37 +771,11 @@ public class BlockVerifierState {
      * @param valueMove move we update state from
      */
     protected void updateWithValueMove(RAVInstruction.ValueMove valueMove) {
-        var location = valueMove.getLocation();
-        if (location.isVariable()) {
-            /*
-             * Moves of this form: v4|QWORD[.] = MOVE input: v3|QWORD[.] moveKind: QWORD are handled
-             * by VariableSynonymMap. TestCase: BoxingTest.boxBoolean
-             */
-            return;
-        } else if (location.isRegister() && valueMove.constant.isVariable()) {
-            var regLoc = location.asRegister();
-
-            var state = this.values.get(regLoc);
-            if (state instanceof ValueAllocationState valueAllocationState) {
-                var value = valueAllocationState.getRAValue();
-                if (value instanceof CalleeSaveMap.CalleeSavedRAVRegister) {
-                    /*
-                     * Virtual move in form r1 = VIRTMOVE v1, assigns variable v1 to callee saved
-                     * register; this needs to be saved to properly check that callee saved value is
-                     * retrieved at exit point.
-                     */
-                    calleeSaveMap.addValue(regLoc, valueMove.constant.asVariable());
-                }
-            }
-
-            this.values.putWithoutRegCheck(valueMove.getLocation(), new ValueAllocationState(valueMove.constant, valueMove, block));
+        var state = new ValueAllocationState(valueMove.constant, valueMove, block);
+        if (valueMove.validateRegisters) {
+            this.values.put(valueMove.getLocation(), state, valueMove);
         } else {
-            var state = new ValueAllocationState(valueMove.constant, valueMove, block);
-            if (valueMove.validateRegisters) {
-                this.values.put(valueMove.getLocation(), state, valueMove);
-            } else {
-                this.values.putWithoutRegCheck(valueMove.getLocation(), state);
-            }
+            this.values.putWithoutRegCheck(valueMove.getLocation(), state);
         }
     }
 }
