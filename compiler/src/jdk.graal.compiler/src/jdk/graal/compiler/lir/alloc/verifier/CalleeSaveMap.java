@@ -47,9 +47,8 @@ import jdk.vm.ci.code.RegisterValue;
  * </p>
  *
  * <p>
- * Or it can be a {@link RAValue} that was set using a {@link RAVInstruction.VirtualLocationMove}.
- * Which is a move that assigns a variable/symbol to a register after instruction with predefined
- * output registers.
+ * Or it can be a {@link RAValue} that was set by the first label, meaning we are preserving
+ * parameter that was received.
  * </p>
  */
 public class CalleeSaveMap {

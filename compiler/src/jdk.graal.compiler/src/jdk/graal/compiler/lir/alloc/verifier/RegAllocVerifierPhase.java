@@ -622,15 +622,6 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
             for (var instruction : instructions) {
                 presentInstructions.add(instruction);
-
-                var rAVInstr = preallocMap.get(instruction);
-                if (rAVInstr instanceof RAVInstruction.Op op) {
-                    for (int i = 0; i < op.dests.count; i++) {
-                        if (op.dests.orig[i].isVariable()) {
-                            var variable = op.dests.orig[i].asVariable();
-                        }
-                    }
-                }
             }
         }
         return presentInstructions;

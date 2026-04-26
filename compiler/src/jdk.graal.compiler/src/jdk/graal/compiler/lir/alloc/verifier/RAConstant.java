@@ -46,6 +46,7 @@ public class RAConstant extends RAValue {
         return value;
     }
 
+    @Override
     public boolean equals(Object other) {
         if (other instanceof RAConstant raConstant) {
             return value.getConstant().equals(raConstant.value.getConstant());
