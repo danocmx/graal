@@ -340,18 +340,6 @@ public class VerifierPrinter {
     protected void printInstruction(RAVInstruction.Base instruction) {
         out.println(instruction.toString());
         if (instruction instanceof RAVInstruction.Op op) {
-            if (op.isLabel()) {
-                out.println("Label" + op.lirInstruction.toString());
-            }
-
-            if (op.virtualMoveList.size() > 0) {
-                out.println("Virtual moves: " + op.virtualMoveList);
-            }
-
-            if (op.speculativeMoveList.size() > 0) {
-                out.println("Speculative moves: " + op.speculativeMoveList);
-            }
-
             out.adjustIndentation(INDENT);
             if (op.lirInstruction.hasState()) {
                 out.println("State: " + op.stateValues);

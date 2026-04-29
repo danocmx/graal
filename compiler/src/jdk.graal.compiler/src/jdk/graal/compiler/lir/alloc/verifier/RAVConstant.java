@@ -25,14 +25,50 @@
 package jdk.graal.compiler.lir.alloc.verifier;
 
 import jdk.graal.compiler.lir.ConstantValue;
+import jdk.vm.ci.meta.Constant;
 
-public class RAConstant extends RAValue {
+public class RAVConstant extends RAValue {
+    protected final ConstantValue value;
+
+    /**
+     * Setting from
+     * {@link jdk.graal.compiler.lir.StandardOp.LoadConstantOp#canRematerializeToStack}, stored in
+     * here to be able to check, if it was not violated, if a constant was rematerialized by the
+     * allocator.
+     */
     public final boolean canRematerializeToStack;
 
-    public RAConstant(ConstantValue value, boolean canRematerializeToStack) {
+    public RAVConstant(ConstantValue value, boolean canRematerializeToStack) {
         super(value);
 
+        this.value = value;
         this.canRematerializeToStack = canRematerializeToStack;
+    }
+
+    public Constant getConstant() {
+        return value.getConstant();
+    }
+
+    public ConstantValue getConstantValue() {
+        return value;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (other instanceof RAVConstant ravConstant) {
+            return value.getConstant().equals(ravConstant.value.getConstant());
+        }
+        return false;
+    }
+
+    @Override
+    public int hashCode() {
+        return value.getConstant().hashCode();
+    }
+
+    @Override
+    public String toString() {
+        return value.getConstant().toString();
     }
 
     @Override

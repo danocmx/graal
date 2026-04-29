@@ -79,26 +79,21 @@ public class ConflictedAllocationState extends AllocationState {
     }
 
     /**
-     * Any state coming here will be added to the conflict set and create a new
-     * {@link ConflictedAllocationState} instance.
+     * Adds incoming state to conflicted states, does not allocate a new state.
      *
      * @param other The other state coming from a predecessor edge
-     * @return {@link ConflictedAllocationState} with predecessor state added up
+     * @return always null (see {@link AllocationStateMap#mergeWith}), to not trigger propagation
+     *         through the CFG
      */
     @Override
     public AllocationState meet(AllocationState other, BasicBlock<?> otherBlock, BasicBlock<?> block) {
-        var newlyConflictedState = new ConflictedAllocationState(this.getConflictedStates());
         if (other instanceof ValueAllocationState valueState) {
-            newlyConflictedState.addConflictedValue(valueState);
-        }
-
-        if (other instanceof ConflictedAllocationState conflictedState) {
+            this.addConflictedValue(valueState);
+        } else if (other instanceof ConflictedAllocationState conflictedState) {
             for (var otherConfState : conflictedState.getConflictedStates()) {
-                newlyConflictedState.addConflictedValue(otherConfState);
+                this.addConflictedValue(otherConfState);
             }
-        }
-
-        if (other instanceof UnknownAllocationState) {
+        } else if (other instanceof UnknownAllocationState) {
             /*
              * Unknown state creates an Illegal ValueAllocationState inside it, because the unknown
              * state is coming from a different predecessor to the same block, and it means that
@@ -106,10 +101,11 @@ public class ConflictedAllocationState extends AllocationState {
              * block, meaning it's now in a conflicted state, where it either is defined or it -
              * should not be used in further blocks.
              */
-            newlyConflictedState.addConflictedValue(ValueAllocationState.createUndefined(otherBlock));
+            this.addConflictedValue(ValueAllocationState.createUndefined(otherBlock));
         }
 
-        return newlyConflictedState;
+        // When conflicted, we do not want to process everything again
+        return null;
     }
 
     @Override

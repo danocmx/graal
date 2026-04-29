@@ -30,12 +30,11 @@ import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
+import jdk.graal.compiler.lir.dfa.UniqueWorkList;
 
 import java.io.OutputStream;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Queue;
 
 /**
  * Class encapsulating the whole Register Allocation Verification. Maintaining entry states for
@@ -96,8 +95,8 @@ public class RegAllocVerifier {
      * This is necessary to verify instruction inputs correctly.
      * </p>
      */
-    public void calculateEntryBlocks() {
-        Queue<BasicBlock<?>> worklist = new ArrayDeque<>();
+    public void computeEntryStates() {
+        var worklist = new UniqueWorkList(lir.getBlocks().length);
 
         var startBlock = this.lir.getControlFlowGraph().getStartBlock();
         var startBlockState = createNewBlockState(startBlock);
@@ -106,6 +105,10 @@ public class RegAllocVerifier {
         worklist.add(startBlock);
         while (!worklist.isEmpty()) {
             var block = worklist.poll();
+            if (block.getSuccessorCount() == 0) {
+                continue; // No entry state to compute for successors
+            }
+
             var instructions = this.blockInstructions.get(block);
 
             // Create new entry state for successor blocks out of current block state
@@ -128,6 +131,12 @@ public class RegAllocVerifier {
                 }
 
                 this.blockEntryStates.put(succ, succState);
+
+                /*
+                 * Remove block from the worklist to delay processing this can reduce the number of
+                 * times that merge block is processed due to changes.
+                 */
+                worklist.remove(succ);
                 worklist.add(succ);
             }
         }
@@ -210,9 +219,7 @@ public class RegAllocVerifier {
      */
     @SuppressWarnings("try")
     public void run(boolean failOnFirst) {
-        this.fromUsageResolverGlobal.resolvePhiFromUsage();
-
-        this.calculateEntryBlocks();
+        this.computeEntryStates();
 
         if (failOnFirst) {
             this.verifyInstructionInputs();

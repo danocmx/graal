@@ -24,7 +24,7 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
-import jdk.graal.compiler.lir.alloc.verifier.RAConstant;
+import jdk.graal.compiler.lir.alloc.verifier.RAVConstant;
 import jdk.graal.compiler.lir.alloc.verifier.RAValue;
 import jdk.graal.compiler.lir.alloc.verifier.ValueAllocationState;
 
@@ -33,11 +33,11 @@ import jdk.graal.compiler.lir.alloc.verifier.ValueAllocationState;
  */
 @SuppressWarnings("serial")
 public class ConstantRematerializedToStackException extends RAVException {
-    public final RAConstant constant;
+    public final RAVConstant constant;
     public final RAValue location;
     public final ValueAllocationState state;
 
-    public ConstantRematerializedToStackException(RAConstant constant, RAValue location, ValueAllocationState state) {
+    public ConstantRematerializedToStackException(RAVConstant constant, RAValue location, ValueAllocationState state) {
         super("Constant " + constant + " cannot be rematerialized to stack location " + location, state.getSource(), state.getBlock());
 
         this.constant = constant;

@@ -24,6 +24,10 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
+import static jdk.vm.ci.code.ValueUtil.asRegister;
+import static jdk.vm.ci.code.ValueUtil.isRegister;
+import static jdk.vm.ci.code.ValueUtil.isStackSlot;
+
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.LIRFrameState;
@@ -39,10 +43,6 @@ import jdk.vm.ci.meta.Value;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
-import static jdk.vm.ci.code.ValueUtil.asRegister;
-import static jdk.vm.ci.code.ValueUtil.isRegister;
-import static jdk.vm.ci.code.ValueUtil.isStackSlot;
 
 /**
  * Build references list for operations that can be used to in-validate references that are not part

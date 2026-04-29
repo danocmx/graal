@@ -73,7 +73,7 @@ public abstract class AllocationState implements Cloneable {
      * @param other The other state coming from a predecessor edge
      * @param otherBlock Which block is other state from
      * @param block Which state is this state from?
-     * @return What is the new state the location is in.
+     * @return New state if the current one needs to be changed, null otherwise.
      */
     public abstract AllocationState meet(AllocationState other, BasicBlock<?> otherBlock, BasicBlock<?> block);
 }

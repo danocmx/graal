@@ -28,10 +28,10 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.StandardOp;
+import jdk.graal.compiler.lir.dfa.UniqueWorkList;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -167,7 +167,7 @@ public class FromUsageResolverGlobal {
      * information.
      */
     public void resolvePhiFromUsage() {
-        Queue<BasicBlock<?>> worklist = new ArrayDeque<>();
+        Queue<BasicBlock<?>> worklist = new UniqueWorkList(lir.getBlocks().length);
 
         this.initializeUsages();
 
@@ -186,7 +186,8 @@ public class FromUsageResolverGlobal {
     }
 
     protected void processBlock(Queue<BasicBlock<?>> worklist) {
-        var block = worklist.remove();
+        var block = worklist.poll();
+        assert block != null;
 
         var exitUsage = blockUsageMap.get(block);
         exitUsage.processed = true;
@@ -223,14 +224,12 @@ public class FromUsageResolverGlobal {
                 if (!mergeInto(predReached, usage)) {
                     if (predReached.processed) {
                         continue;
-                    } else if (worklist.contains(pred)) {
-                        continue;
                     }
 
                     /*
-                     * Not yet processed, but also not in a worklist this can happen when alias has
-                     * been resolved and predecessor block needs to be processed again (the
-                     * processed flag is set to false)
+                     * Either it has not been processed, or the processed flag was set by alias
+                     * resolution (see resolveLabel end) to force block to be processed again to
+                     * resolve another variable.
                      */
                 }
             }
@@ -255,7 +254,7 @@ public class FromUsageResolverGlobal {
             }
 
             RAValue defValue = successor.locations.get(variable);
-            if (block.locations.containsKey(variable) && block.locations.get(variable).equals(defValue)) {
+            if (defValue.equals(block.locations.get(variable))) {
                 continue;
             }
 
@@ -271,37 +270,12 @@ public class FromUsageResolverGlobal {
      * for the resolution.
      */
     protected void initializeUsages() {
-        Queue<BasicBlock<?>> worklist = new ArrayDeque<>();
-
-        var startBlock = this.lir.getControlFlowGraph().getStartBlock();
-        worklist.add(startBlock);
-
-        // Calculate what is defined when + usages
-        Set<BasicBlock<?>> visited = new EconomicHashSet<>();
-        while (!worklist.isEmpty()) {
-            var block = worklist.poll();
-            if (visited.contains(block)) {
-                continue;
-            }
-
-            visited.add(block);
-
+        for (var block : lir.getControlFlowGraph().getBlocks()) {
             var instructions = blockInstructions.get(block);
             var label = (RAVInstruction.Op) instructions.getFirst();
 
             for (var i = 0; i < label.dests.count; i++) {
-                if (label.dests.orig[i].isVariable()) {
-                    if (label.dests.curr[i] != null) {
-                        // TestCase: TruffleSafepointTest
-                        // java.concurrent.ForkJoinPool
-                        // some methods for this class have location kept in
-                        // them after the register allocation is complete,
-                        // but such information should be stripped by the allocator.
-                        // This information uses one register for 2 variables in a label
-                        // and triggers an error in the verification
-                        label.dests.curr[i] = null;
-                    }
-
+                if (label.dests.orig[i].isVariable() && label.dests.curr[i] == null) {
                     var variable = label.dests.orig[i].asVariable();
                     labelMap.put(variable, label);
                 }
@@ -366,12 +340,6 @@ public class FromUsageResolverGlobal {
                         }
                     }
                 }
-            }
-
-            for (int i = 0; i < block.getSuccessorCount(); i++) {
-                var succ = block.getSuccessorAt(i);
-
-                worklist.add(succ);
             }
         }
     }
@@ -462,6 +430,18 @@ public class FromUsageResolverGlobal {
             for (int j = 0; j < block.getPredecessorCount(); j++) {
                 var pred = block.getPredecessorAt(j);
                 var jump = (RAVInstruction.Op) blockInstructions.get(pred).getLast();
+
+                var orig = jump.alive.orig[i];
+                if (!RAValue.kindsEqual(orig, location)) {
+                    /*
+                     * TestCase: DerivedOopTest <pre> B3: rdx|QWORD[*] = REGMOVE rcx|QWORD[.+] <--
+                     * Type is cast here [] = JUMP [] [v8|QWORD[.+] -> rdx|QWORD[*]] [] <-- Needs
+                     * the type change B5: [v12|QWORD[*] -> rdx|QWORD[*]] = LABEL [] [] [] [] =
+                     * BLACKHOLE [v12|QWORD[*] -> rdx|QWORD[*]] [] [] </pre>
+                     */
+
+                    jump.alive.orig[i] = RAValue.cast(orig, location);
+                }
 
                 jump.alive.curr[i] = location; // Set predecessor location
             }

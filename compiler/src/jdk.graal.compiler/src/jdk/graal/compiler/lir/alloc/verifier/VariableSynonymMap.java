@@ -29,51 +29,67 @@ import jdk.graal.compiler.util.EconomicHashMap;
 import java.util.Map;
 
 /**
- * Union-find data structure for synonyms between variables created by virtual moves.
+ * Simplified disjoint union set implementation. We could on the fact that the destination variable
+ * is only defined once in variable to variable moves.
+ *
+ * <p>
+ * The representative of every union is the original source variable not created by a coalesced
+ * move.
+ * </p>
  */
 public class VariableSynonymMap {
     protected final Map<RAVariable, RAVariable> parent;
-    protected final Map<RAVariable, Integer> rank;
 
     protected VariableSynonymMap() {
         parent = new EconomicHashMap<>();
-        rank = new EconomicHashMap<>();
     }
 
-    protected void addSynonym(RAVariable source, RAVariable target) {
-        union(source, target);
+    /**
+     * Add a synonym to the disjoint union set.
+     *
+     * <p>
+     * The destination variable is only defined once and is always linked to the root of the source
+     * variable.
+     * </p>
+     *
+     * <p>
+     * This method counts on the fact that the source variable was already defined by either a
+     * different coalesced move or by an existing instruction <code>v2 = MOVE v1</code> and then
+     * followed by <code>v1 = MOVE v3</code> will cause a failure.
+     * </p>
+     *
+     * @param src Source variable
+     * @param dst Destination variable
+     */
+    protected void addSynonym(RAVariable src, RAVariable dst) {
+        assert !parent.containsKey(dst) : "Cannot redefine variable again.";
+
+        RAVariable rootSrc = find(src);
+        parent.put(dst, rootSrc);
     }
 
+    /**
+     * Find the root of the variable. If none is found, then the variable itself is returned.
+     *
+     * @param x Variable to find the root of
+     * @return Root of the variable
+     */
     public RAVariable find(RAVariable x) {
         parent.putIfAbsent(x, x);
-        if (!parent.get(x).equals(x)) {
-            parent.put(x, find(parent.get(x)));
-        }
         return parent.get(x);
     }
 
-    protected void union(RAVariable a, RAVariable b) {
-        RAVariable rootA = find(a);
-        RAVariable rootB = find(b);
-
-        if (rootA.equals(rootB)) {
-            return;
-        }
-
-        int rankA = rank.getOrDefault(rootA, 0);
-        int rankB = rank.getOrDefault(rootB, 0);
-
-        if (rankA < rankB) {
-            parent.put(rootA, rootB);
-        } else if (rankA > rankB) {
-            parent.put(rootB, rootA);
-        } else {
-            parent.put(rootB, rootA);
-            rank.put(rootA, rankA + 1);
-        }
-    }
-
-    protected boolean isSynonymOf(RAVariable source, RAVariable target) {
-        return find(source).equals(find(target));
+    /**
+     * Check if a variable is being aliased by some other variable.
+     *
+     * <p>
+     * The parent map has to have an entry, and it has to be different from the variable itself.
+     * </p>
+     *
+     * @param variable Input variable
+     * @return Is aliased?
+     */
+    protected boolean isAliased(RAVariable variable) {
+        return parent.containsKey(variable) && !parent.get(variable).equals(variable);
     }
 }
