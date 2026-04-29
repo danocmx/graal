@@ -35,7 +35,7 @@ import jdk.graal.compiler.lir.Variable;
  * </p>
  */
 public class RAVariable extends RAValue {
-    protected Variable variable;
+    protected final Variable variable;
 
     protected RAVariable(Variable variable) {
         super(variable);
