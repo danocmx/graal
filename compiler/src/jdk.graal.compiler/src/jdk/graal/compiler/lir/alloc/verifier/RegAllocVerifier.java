@@ -73,6 +73,11 @@ public class RegAllocVerifier {
      */
     protected final CalleeSaveMap calleeSaveMap;
 
+    /**
+     * Handler for non-constant rematerialization
+     */
+    protected RematerializationHandler rematerializationHandler;
+
     public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig) {
         this.lir = lir;
         this.registerAllocationConfig = registerAllocationConfig;
@@ -84,6 +89,7 @@ public class RegAllocVerifier {
         this.fromUsageResolverGlobal = new FromUsageResolverGlobal(lir, blockInstructions);
 
         this.calleeSaveMap = new CalleeSaveMap(registerAllocationConfig.getRegisterConfig());
+        this.rematerializationHandler = new RematerializationHandler();
     }
 
     /**
@@ -113,7 +119,13 @@ public class RegAllocVerifier {
 
             // Create new entry state for successor blocks out of current block state
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
-            for (var instr : instructions) {
+            for (int i = 0; i < instructions.size(); i++) {
+                var instr = instructions.get(i);
+                if (instr instanceof RAVInstruction.UnknownInstruction unknown) {
+                    instr = rematerializationHandler.rematerialize(unknown, state);
+                    instructions.set(i, instr);
+                }
+
                 state.update(instr);
             }
 
@@ -157,7 +169,14 @@ public class RegAllocVerifier {
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
             var instructions = this.blockInstructions.get(block);
 
-            for (var instr : instructions) {
+            for (int i = 0; i < instructions.size(); i++) {
+                var instr = instructions.get(i);
+                if (instr instanceof RAVInstruction.UnknownInstruction unknown) {
+                    // Quick fix, blocks with no successors
+                    instr = rematerializationHandler.rematerialize(unknown, state);
+                    instructions.set(i, instr);
+                }
+
                 state.check(instr);
                 state.update(instr);
             }
@@ -219,6 +238,7 @@ public class RegAllocVerifier {
      */
     @SuppressWarnings("try")
     public void run(boolean failOnFirst) {
+        this.rematerializationHandler.prepare(lir, blockInstructions);
         this.computeEntryStates();
 
         if (failOnFirst) {

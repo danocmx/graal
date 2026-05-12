@@ -515,7 +515,8 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
                         continue;
                     }
 
-                    throw new UnknownInstructionError(instruction, block);
+                    instructionList.add(new RAVInstruction.UnknownInstruction(instruction));
+                    continue;
                 }
 
                 var opRAVInstr = (RAVInstruction.Op) rAVInstr;

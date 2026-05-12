@@ -548,4 +548,15 @@ public class RAVInstruction {
             this.dstVariable = RAValue.create(dstVariable).asVariable();
         }
     }
+
+    public static class UnknownInstruction extends Base {
+        public UnknownInstruction(LIRInstruction instr) {
+            super(instr);
+        }
+
+        @Override
+        public String toString() {
+            return "UNKNOWN " + lirInstruction;
+        }
+    }
 }
