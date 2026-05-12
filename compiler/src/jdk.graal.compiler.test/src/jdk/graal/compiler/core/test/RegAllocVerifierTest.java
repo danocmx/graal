@@ -1246,8 +1246,8 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
     }
 
     /**
-     * Simulate rematerialization of non-constant values by reinserting
-     * an existing instruction that will not overwrite other symbols.
+     * Simulate rematerialization of non-constant values by reinserting an existing instruction that
+     * will not overwrite other symbols.
      */
     class RematerializedPhase extends RAVPhaseWrapper {
         @Override

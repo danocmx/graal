@@ -77,12 +77,12 @@ public class RematerializationHandler {
      * Find symbolic values for a rematerialized instruction.
      *
      * <ol>
-     *     <li>Collect all instructions before allocation</li>
-     *     <li>Copy current locations to a new Op instance</li>
-     *     <li>Check that all location states previously copied have a state (not unknown)</li>
-     *     <li>Go over every op, check if operand counts match</li>
-     *     <li>Check if the verifier state matches the original variable</li>
-     *     <li>If that is the case for every operand, then the rematerialization target was found</li>
+     * <li>Collect all instructions before allocation</li>
+     * <li>Copy current locations to a new Op instance</li>
+     * <li>Check that all location states previously copied have a state (not unknown)</li>
+     * <li>Go over every op, check if operand counts match</li>
+     * <li>Check if the verifier state matches the original variable</li>
+     * <li>If that is the case for every operand, then the rematerialization target was found</li>
      * </ol>
      *
      * @param instruction LIRInstruction that has been rematerialized
@@ -99,8 +99,8 @@ public class RematerializationHandler {
         lirInstruction.forEachTemp(rematOp.temp.copyCurrentProc);
         lirInstruction.forEachState(rematOp.stateValues.copyCurrentProc);
 
-        checkCurrentLocationState(rematOp.uses, rematOp, blockState, instruction);
-        checkCurrentLocationState(rematOp.alive, rematOp, blockState, instruction);
+        checkCurrentLocationState(rematOp.uses, blockState, instruction);
+        checkCurrentLocationState(rematOp.alive, blockState, instruction);
 
         var ops = materializations.get(lirInstruction.getClass());
         if (ops == null) {
@@ -131,7 +131,7 @@ public class RematerializationHandler {
         throw new RematerializationFailedException(instruction, blockState.block);
     }
 
-    protected void checkCurrentLocationState(RAVInstruction.ValueArrayPair values, RAVInstruction.Op op, BlockVerifierState blockState, RAVInstruction.UnknownInstruction sourceInstruction) {
+    protected void checkCurrentLocationState(RAVInstruction.ValueArrayPair values, BlockVerifierState blockState, RAVInstruction.UnknownInstruction sourceInstruction) {
         for (int i = 0; i < values.count; i++) {
             var curr = values.curr[i];
             var allocState = blockState.values.get(curr);

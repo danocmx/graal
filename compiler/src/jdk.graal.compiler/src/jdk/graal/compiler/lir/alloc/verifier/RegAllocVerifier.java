@@ -30,16 +30,31 @@ import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.SpilledConstantException;
 import jdk.graal.compiler.lir.dfa.UniqueWorkList;
+import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
+import jdk.graal.compiler.util.EconomicHashMap;
 
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Class encapsulating the whole Register Allocation Verification. Maintaining entry states for
  * blocks, resolving label variable locations, and checking the validity of every location to
  * variable correspondence.
+ *
+ * <p>
+ * The starting point for the implementation is Cranelift's regalloc <a href=
+ * "https://github.com/bytecodealliance/regalloc.rs/blob/main/lib/src/checker.rs">checker</a>,
+ * licensed under Apache License 2.0. The shared parts include the structure of
+ * {@link RegAllocVerifier#computeEntryStates() fixed point computation},
+ * {@link RegAllocVerifier#verifyInstructionInputs() verification loop},
+ * {@link BlockVerifierState#updateWithSafePoint safepoint update}, and
+ * {@link BlockVerifierState#checkReferences safepoint check}. The overwhelming majority of the code
+ * has evolved drastically during the development.
+ * </p>
  */
 public class RegAllocVerifier {
     /**
@@ -74,11 +89,16 @@ public class RegAllocVerifier {
     protected final CalleeSaveMap calleeSaveMap;
 
     /**
-     * Handler for non-constant rematerialization
+     * Handler for non-constant rematerialization.
      */
     protected RematerializationHandler rematerializationHandler;
 
-    public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig) {
+    /**
+     * Register allocator we are verifying output of.
+     */
+    protected RegisterAllocationPhase allocator;
+
+    public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig, RegisterAllocationPhase allocator) {
         this.lir = lir;
         this.registerAllocationConfig = registerAllocationConfig;
 
@@ -90,6 +110,8 @@ public class RegAllocVerifier {
 
         this.calleeSaveMap = new CalleeSaveMap(registerAllocationConfig.getRegisterConfig());
         this.rematerializationHandler = new RematerializationHandler();
+
+        this.allocator = allocator;
     }
 
     /**
@@ -111,10 +133,6 @@ public class RegAllocVerifier {
         worklist.add(startBlock);
         while (!worklist.isEmpty()) {
             var block = worklist.poll();
-            if (block.getSuccessorCount() == 0) {
-                continue; // No entry state to compute for successors
-            }
-
             var instructions = this.blockInstructions.get(block);
 
             // Create new entry state for successor blocks out of current block state
@@ -122,6 +140,7 @@ public class RegAllocVerifier {
             for (int i = 0; i < instructions.size(); i++) {
                 var instr = instructions.get(i);
                 if (instr instanceof RAVInstruction.UnknownInstruction unknown) {
+                    // Blocks with no successors must be processed due to unknown instructions
                     instr = rematerializationHandler.rematerialize(unknown, state);
                     instructions.set(i, instr);
                 }
@@ -155,7 +174,7 @@ public class RegAllocVerifier {
     }
 
     protected BlockVerifierState createNewBlockState(BasicBlock<?> block) {
-        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap);
+        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap, allocator, lir.getOptions());
     }
 
     /**
@@ -169,21 +188,51 @@ public class RegAllocVerifier {
             var state = new BlockVerifierState(block, this.blockEntryStates.get(block));
             var instructions = this.blockInstructions.get(block);
 
-            for (int i = 0; i < instructions.size(); i++) {
-                var instr = instructions.get(i);
-                if (instr instanceof RAVInstruction.UnknownInstruction unknown) {
-                    // Quick fix, blocks with no successors
-                    instr = rematerializationHandler.rematerialize(unknown, state);
-                    instructions.set(i, instr);
+            Map<RAValue, SpilledConstantException> spilledConstantExceptions = new EconomicHashMap<>();
+            for (RAVInstruction.Base instr : instructions) {
+                try {
+                    state.check(instr);
+                } catch (SpilledConstantException e) {
+                    spilledConstantExceptions.put(e.valueAllocationState.getRAValue(), e);
                 }
 
-                state.check(instr);
                 state.update(instr);
+            }
+
+            var lastInstr = instructions.getLast();
+            if (lastInstr instanceof RAVInstruction.Op op && op.isJump()) {
+                processSpilledExceptions(spilledConstantExceptions, state, op);
+            }
+
+            if (!spilledConstantExceptions.isEmpty()) {
+                // Throw one of the constants
+                throw spilledConstantExceptions.values().iterator().next();
             }
 
             if (block.getSuccessorCount() == 0) {
                 state.checkCalleeSavedRegisters();
             }
+        }
+    }
+
+    /**
+     * Remove values passed in JUMP instruction from the spilledConstantExceptions map, because
+     * these constants are spilled because of the phi function location selection.
+     *
+     * @param spilledConstantExceptions Map of spilled constant exceptions that are being processed
+     * @param state Current state of the block
+     * @param op JUMP instruction that is being processed
+     */
+    protected void processSpilledExceptions(Map<RAValue, SpilledConstantException> spilledConstantExceptions,
+                    BlockVerifierState state, RAVInstruction.Op op) {
+        for (int j = 0; j < op.alive.count; j++) {
+            var curr = op.alive.curr[j];
+            var allocState = state.values.get(curr);
+            if (!(allocState instanceof ValueAllocationState valueAllocationState)) {
+                continue;
+            }
+
+            spilledConstantExceptions.remove(valueAllocationState.getRAValue());
         }
     }
 
