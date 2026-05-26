@@ -95,7 +95,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         public static final OptionKey<Boolean> CheckNeverSpillConstants = new OptionKey<>(false);
 
         /**
-         * Verify that {@link StandardOp.LoadConstantOp#canRematerializeToStack()} is being respected
+         * Verify that {@link jdk.graal.compiler.lir.StandardOp.LoadConstantOp#canRematerializeToStack()} is being respected
          * by the register allocator.
          */
         @Option(help = "Check the location of constant materialization", type = OptionType.Debug)
