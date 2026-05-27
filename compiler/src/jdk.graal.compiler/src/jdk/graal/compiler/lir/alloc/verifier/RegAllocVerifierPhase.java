@@ -395,7 +395,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
              * performs the cast, handled in BlockVerifierState.updateWithLocationMove.
              */
             if (!RAValue.kindsEqual(inputVar, orig)) {
-                inputVar = RAValue.cast(orig, inputVar);
+                inputVar = RAValue.cast(inputVar, orig);
             }
 
             values.orig[i] = inputVar;
