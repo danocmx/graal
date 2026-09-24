@@ -30,6 +30,8 @@ import jdk.graal.compiler.lir.LIRInstruction;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.StandardOp;
 import jdk.graal.compiler.lir.VirtualStackSlot;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.vm.ci.code.RegisterValue;
 import jdk.vm.ci.code.StackSlot;
 import jdk.vm.ci.meta.JavaKind;
@@ -262,7 +264,7 @@ public class RAVInstruction {
         /**
          * Count the number of values stored.
          */
-        private final class GetCountProcedure implements InstructionValueProcedure {
+        private static final class GetCountProcedure implements InstructionValueProcedure {
             private int valueCount = 0;
 
             public int getCount() {

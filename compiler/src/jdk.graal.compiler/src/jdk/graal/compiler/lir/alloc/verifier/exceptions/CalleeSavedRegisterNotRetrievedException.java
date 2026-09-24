@@ -26,7 +26,7 @@ package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.lir.alloc.verifier.BlockVerifierState;
-import jdk.graal.compiler.lir.alloc.verifier.RAVRegister;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVRegister;
 
 /**
  * Callee-saved register was not retrieved on an exit block.

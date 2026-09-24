@@ -22,49 +22,56 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.values;
 
-import jdk.graal.compiler.lir.Variable;
+import jdk.vm.ci.code.Register;
+import jdk.vm.ci.code.RegisterValue;
 
 /**
- * Wrapper around {@link Variable} to change how indexing in data structures like
- * {@link java.util.Map} or {@link java.util.Set} is done.
- *
- * <p>
- * We index only by the {@link Variable} index instead of including the kind as well.
- * </p>
+ * Wrap around {@link RegisterValue} to only index by the id of the {@link Register} it holds.
  */
-public class RAVariable extends RAValue {
-    protected final Variable variable;
+public class RAVRegister extends RAValue {
+    protected final RegisterValue registerValue;
 
-    protected RAVariable(Variable variable) {
-        super(variable);
-        this.variable = variable;
+    public RAVRegister(RegisterValue registerValue) {
+        super(registerValue);
+
+        this.registerValue = registerValue;
+    }
+
+    public RegisterValue getRegisterValue() {
+        return registerValue;
+    }
+
+    public Register getRegister() {
+        return registerValue.getRegister();
     }
 
     @Override
-    public RAVariable asVariable() {
+    public RAVRegister asRegister() {
         return this;
     }
 
     @Override
-    public boolean isVariable() {
+    public boolean isRegister() {
         return true;
-    }
-
-    public Variable getVariable() {
-        return variable;
     }
 
     @Override
     public int hashCode() {
-        return variable.index;
+        return this.registerValue.getRegister().hashCode();
     }
 
+    /**
+     * Equal RegisterValue on it's Register, not Register and kind, otherwise the same as a Value.
+     *
+     * @param other The reference object with which to compare.
+     * @return Are said values equal?
+     */
     @Override
     public boolean equals(Object other) {
-        if (other instanceof RAVariable raVariable) {
-            return variable.index == raVariable.variable.index;
+        if (other instanceof RAVRegister otherReg) {
+            return this.registerValue.getRegister().equals(otherReg.registerValue.getRegister());
         }
 
         return false;
@@ -72,6 +79,6 @@ public class RAVariable extends RAValue {
 
     @Override
     public String toString() {
-        return "v" + variable.index;
+        return this.registerValue.getRegister().toString();
     }
 }

@@ -27,6 +27,8 @@ package jdk.graal.compiler.lir.alloc.verifier;
 import java.util.List;
 import java.util.Map;
 
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVRegister;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterConfig;
@@ -60,7 +62,7 @@ public class CalleeSaveMap {
         virtualValues = new EconomicHashMap<>();
     }
 
-    public class CalleeSavedRAVRegister extends RAVRegister {
+    public static class CalleeSavedRAVRegister extends RAVRegister {
         protected CalleeSavedRAVRegister(RegisterValue registerValue) {
             super(registerValue);
         }

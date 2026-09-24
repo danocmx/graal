@@ -22,7 +22,7 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.values;
 
 import jdk.graal.compiler.lir.ConstantValue;
 import jdk.vm.ci.meta.Constant;

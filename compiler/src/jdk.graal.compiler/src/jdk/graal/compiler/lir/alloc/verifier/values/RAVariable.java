@@ -22,29 +22,56 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier.exceptions;
+package jdk.graal.compiler.lir.alloc.verifier.values;
 
-import jdk.graal.compiler.core.common.cfg.BasicBlock;
-import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
-import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.Variable;
 
 /**
- * No location found in an instruction after allocation for certain variable.
+ * Wrapper around {@link Variable} to change how indexing in data structures like
+ * {@link java.util.Map} or {@link java.util.Set} is done.
+ *
+ * <p>
+ * We index only by the {@link Variable} index instead of including the kind as well.
+ * </p>
  */
-@SuppressWarnings("serial")
-public class MissingLocationException extends RAVException {
-    /**
-     * Construct a MissingLocationError.
-     *
-     * @param instruction Instruction where violation occurred
-     * @param block Block where violation occurred
-     * @param variable Variable before allocation that has no location afterward
-     */
-    public MissingLocationException(RAVInstruction.Op instruction, BasicBlock<?> block, RAValue variable) {
-        super(MissingLocationException.getMessage(variable), instruction, block);
+public class RAVariable extends RAValue {
+    protected final Variable variable;
+
+    protected RAVariable(Variable variable) {
+        super(variable);
+        this.variable = variable;
     }
 
-    static String getMessage(RAValue variable) {
-        return "Variable " + variable + " is missing a location";
+    @Override
+    public RAVariable asVariable() {
+        return this;
+    }
+
+    @Override
+    public boolean isVariable() {
+        return true;
+    }
+
+    public Variable getVariable() {
+        return variable;
+    }
+
+    @Override
+    public int hashCode() {
+        return variable.index;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (other instanceof RAVariable raVariable) {
+            return variable.index == raVariable.variable.index;
+        }
+
+        return false;
+    }
+
+    @Override
+    public String toString() {
+        return "v" + variable.index;
     }
 }

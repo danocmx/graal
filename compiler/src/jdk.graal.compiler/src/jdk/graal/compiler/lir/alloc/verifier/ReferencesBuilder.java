@@ -32,6 +32,7 @@ import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.LIRFrameState;
 import jdk.graal.compiler.lir.LIRInstruction;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.dfa.LocationMarker;
 import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.lir.util.ValueSet;
@@ -45,7 +46,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Build references list for operations that can be used to in-validate references that are not part
+ * Build references list for operations that can be used to invalidate references that are not part
  * of it to make sure GC-freed references are not used further.
  *
  * <p>

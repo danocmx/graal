@@ -53,15 +53,17 @@ import jdk.graal.compiler.lir.alloc.verifier.exceptions.KindsMismatchException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.MissingLocationException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.MissingReferenceException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.OperandFlagMismatchException;
-import jdk.graal.compiler.lir.alloc.verifier.RAVConstant;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVConcreteStackSlot;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVConstant;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
-import jdk.graal.compiler.lir.alloc.verifier.RAValue;
-import jdk.graal.compiler.lir.alloc.verifier.RAVariable;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.graal.compiler.lir.alloc.verifier.RegAllocVerifierPhase;
 import jdk.graal.compiler.lir.alloc.verifier.ValueAllocationState;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.ValueNotInRegisterException;
 import jdk.graal.compiler.lir.asm.CompilationResultBuilder;
+import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.lir.framemap.SimpleVirtualStackSlot;
 import jdk.graal.compiler.lir.gen.LIRGenerationResult;
 import jdk.graal.compiler.lir.phases.AllocationPhase;
@@ -77,6 +79,7 @@ import jdk.vm.ci.code.CallingConvention;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterAttributes;
 import jdk.vm.ci.code.RegisterConfig;
+import jdk.vm.ci.code.StackSlot;
 import jdk.vm.ci.code.TargetDescription;
 import jdk.vm.ci.code.ValueKindFactory;
 import jdk.vm.ci.meta.AllocatableValue;
@@ -169,15 +172,6 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             // Does not always have to be used.
         }
 
-        @Override
-        protected void run(TargetDescription target, LIRGenerationResult lirGenRes, AllocationContext context) {
-            try {
-                super.run(target, lirGenRes, context);
-            } catch (RAVException e) {
-                exception = e;
-            }
-        }
-
         /**
          * Last used variable id, incremented whenever {@link RAVPhaseWrapper#createNewVariable} is
          * called.
@@ -197,7 +191,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             return createNewVariable(lir, ValueKind.Illegal);
         }
 
-        protected RAVInstruction.Op createSymbolUsage(RAValue symbol, RAValue location) {
+        protected RAVInstruction.Op createSymbolUsageOp(RAValue symbol, RAValue location) {
             var usage = new RAVInstruction.Op(new StandardOp.NoOp(null, 0));
 
             usage.uses = new RAVInstruction.ValueArrayPair(1);
@@ -677,7 +671,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
             targetVariable = createNewVariable(lir);
             // Here the target varible will not be read, instead it will be conflicted
-            var usage = createSymbolUsage(targetVariable, conflictLocation);
+            var usage = createSymbolUsageOp(targetVariable, conflictLocation);
             var usageIdx = 1;
             instructions.get(conflictBlock).add(usageIdx, usage);
         }
@@ -858,7 +852,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
             var remMove = new RAVInstruction.ValueMove(new LoadConstOp(stackSlot, constant.getJavaConstant()), constant, stackSlot);
 
-            var usage = createSymbolUsage(constantValue, stackSlotValue);
+            var usage = createSymbolUsageOp(constantValue, stackSlotValue);
 
             var blockInstructions = instructions.get(0);
             blockInstructions.add(blockInstructions.size() - 1, remMove);
@@ -1068,7 +1062,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             labelOp.dests = newDst;
             label = labelOp;
 
-            var usage = createSymbolUsage(variable, location);
+            var usage = createSymbolUsageOp(variable, location);
             instructions.get(0).add(instructions.get(0).size() - 1, usage);
         }
     }
@@ -1232,8 +1226,8 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             changedInstructions.add(instructions.get(0).getFirst());
             changedInstructions.add(createSymbolSpawnOp(liveVariable, location));
             changedInstructions.add(createSymbolSpawnOp(overwrittenVariable, location));
-            changedInstructions.add(createSymbolUsage(overwrittenVariable, location));
-            changedInstructions.add(createSymbolUsage(liveVariable, location));
+            changedInstructions.add(createSymbolUsageOp(overwrittenVariable, location));
+            changedInstructions.add(createSymbolUsageOp(liveVariable, location));
 
             for (var blockId : lir.getBlocks()) {
                 var block = lir.getBlockById(blockId);
@@ -1242,6 +1236,47 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
             var startBlock = lir.getControlFlowGraph().getStartBlock();
             instructions.put(startBlock, changedInstructions);
+        }
+    }
+
+    class StackSlotOverlapPhase extends RAVPhaseWrapper {
+        RAVariable v1;
+        RAVariable v2;
+        RAVConcreteStackSlot s1;
+        RAVConcreteStackSlot s2;
+
+        @Override
+        protected void modifyVerifierInstructions(LIR lir, BlockMap<List<RAVInstruction.Base>> instructions, AllocationContext context) {
+            var kind = LIRKind.value(AMD64Kind.V32_BYTE);
+
+            v1 = createNewVariable(lir, kind);
+            v2 = createNewVariable(lir, kind);
+
+            s1 = createStackSlot(kind, 0);
+            s2 = createStackSlot(kind, kind.getPlatformKind().getSizeInBytes() - 1);
+
+            var changedInstructions = new ArrayList<RAVInstruction.Base>();
+            changedInstructions.add(createSymbolSpawnOp(v1, s1));
+            changedInstructions.add(createSymbolSpawnOp(v2, s2));
+            changedInstructions.add(createSymbolUsageOp(v1, s1));
+
+            for (var blockId : lir.getBlocks()) {
+                var block = lir.getBlockById(blockId);
+                instructions.put(block, new ArrayList<>());
+            }
+
+            var startBlock = lir.getControlFlowGraph().getStartBlock();
+            instructions.put(startBlock, changedInstructions);
+        }
+
+        @Override
+        protected FrameMap getFrameMap(LIRGenerationResult lirGenRes) {
+            lirGenRes.buildFrameMap(); // Should throw so can be built here.
+            return lirGenRes.getFrameMap();
+        }
+
+        protected RAVConcreteStackSlot createStackSlot(LIRKind kind, int offset) {
+            return (RAVConcreteStackSlot) RAValue.create(StackSlot.get(kind, offset, false));
         }
     }
 
@@ -1344,7 +1379,11 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         compile(getResolvedJavaMethod(methodName), null);
         Assert.assertNull(exception);
 
-        compileModified(methodName);
+        try {
+            compileModified(methodName);
+        } catch (RAVException e) {
+            exception = e;
+        }
 
         return assertException(expectedException);
     }
@@ -1678,6 +1717,13 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         var vnrException = runVerifierExpectingException("referenceSnippet", deleteReferencePhase, ValueNotInRegisterException.class);
         Assert.assertEquals(vnrException.variable, deleteReferencePhase.variable);
         Assert.assertEquals(vnrException.location, deleteReferencePhase.location);
+    }
+
+    @Test
+    public void testStackSlotOverlap() {
+        var stackSlotOverlapPhase = new StackSlotOverlapPhase();
+        var exception = runVerifierExpectingException("simple", stackSlotOverlapPhase, ValueNotInRegisterException.class);
+        Assert.assertEquals(stackSlotOverlapPhase.s1, exception.location);
     }
 }
 

@@ -26,7 +26,7 @@ package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
-import jdk.graal.compiler.lir.alloc.verifier.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 
 /**
  * Violation of the alive inputs occurred, the same location was marked as alive argument as well as

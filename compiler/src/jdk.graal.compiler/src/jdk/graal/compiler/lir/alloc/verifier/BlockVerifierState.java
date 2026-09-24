@@ -44,7 +44,11 @@ import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.SpilledConstantException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.ValueNotInRegisterException;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVConstant;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVRegister;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.dfa.LocationMarker;
+import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.ValueUtil;
@@ -93,8 +97,8 @@ public class BlockVerifierState {
     protected OptionValues options;
 
     public BlockVerifierState(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig,
-                    CalleeSaveMap calleeSaveMap, RegisterAllocationPhase allocator, OptionValues options) {
-        this.values = new AllocationStateMap(block, registerAllocationConfig);
+                    CalleeSaveMap calleeSaveMap, RegisterAllocationPhase allocator, FrameMap frameMap, OptionValues options) {
+        this.values = new AllocationStateMap(block, registerAllocationConfig, frameMap);
         this.registerAllocationConfig = registerAllocationConfig;
         this.calleeSaveMap = calleeSaveMap;
         this.block = block;
@@ -712,7 +716,7 @@ public class BlockVerifierState {
      * @param op SafePoint we are using to remove old references
      */
     protected void updateWithSafePoint(RAVInstruction.Op op) {
-        for (var entry : this.values.internalMap.entrySet()) {
+        for (var entry : this.values.getEntrySet()) {
             var state = entry.getValue();
             if (state.isUnknown() || state.isConflicted()) {
                 continue; // Retain information
@@ -733,7 +737,7 @@ public class BlockVerifierState {
              * reference list? Because the list is expected to have stack slots and registers can
              * retain the same references.
              */
-            entry.setValue(new ValueAllocationState(new RAValue(Value.ILLEGAL), op, block));
+            entry.setValue(new ValueAllocationState(RAValue.create(Value.ILLEGAL), op, block));
         }
     }
 

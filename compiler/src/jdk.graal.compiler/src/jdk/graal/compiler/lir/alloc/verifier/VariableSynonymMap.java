@@ -24,13 +24,13 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.graal.compiler.util.EconomicHashMap;
 
 import java.util.Map;
 
 /**
- * Simplified disjoint union set implementation. We could on the fact that the destination variable
- * is only defined once in variable to variable moves.
+ * Simplified disjoint union set implementation, because the variable is only defined once.
  *
  * <p>
  * The representative of every union is the original source variable not created by a coalesced
