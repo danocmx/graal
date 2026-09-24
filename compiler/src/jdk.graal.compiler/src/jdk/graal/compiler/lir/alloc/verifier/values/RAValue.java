@@ -22,7 +22,7 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.values;
 
 import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.LIRKindWithCast;
@@ -30,6 +30,7 @@ import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.LIRValueUtil;
 import jdk.graal.compiler.lir.Variable;
+import jdk.graal.compiler.lir.alloc.verifier.AllocationStateMap;
 import jdk.vm.ci.code.ValueUtil;
 import jdk.vm.ci.meta.Value;
 import jdk.vm.ci.meta.ValueKind;
@@ -70,10 +71,14 @@ public class RAValue {
             return new RAVConstant(LIRValueUtil.asConstantValue(value), true);
         }
 
+        if (ValueUtil.isStackSlot(value)) {
+            return new RAVConcreteStackSlot(ValueUtil.asStackSlot(value));
+        }
+
         return new RAValue(value);
     }
 
-    protected static boolean kindsEqual(RAValue orig, RAValue location) {
+    public static boolean kindsEqual(RAValue orig, RAValue location) {
         var origKind = orig.getLIRKind();
         var currKind = location.getLIRKind();
         if (currKind instanceof LIRKindWithCast castKind) {
@@ -131,6 +136,14 @@ public class RAValue {
 
     public RAVRegister asRegister() {
         return (RAVRegister) this;
+    }
+
+    public boolean isConcreteStackSlotValue() {
+        return false;
+    }
+
+    public RAVConcreteStackSlot asConcreteStackSlotValue() {
+        return (RAVConcreteStackSlot) this;
     }
 
     public LIRKind getLIRKind() {

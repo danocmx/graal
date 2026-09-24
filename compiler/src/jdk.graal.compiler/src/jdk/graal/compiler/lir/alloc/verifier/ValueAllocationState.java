@@ -28,6 +28,7 @@ import jdk.graal.compiler.core.common.LIRKind;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.debug.GraalError;
 import jdk.graal.compiler.lir.LIRValueUtil;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.vm.ci.code.ValueUtil;
 import jdk.vm.ci.meta.Value;
 
@@ -106,7 +107,7 @@ public final class ValueAllocationState extends AllocationState {
      * @return instance of {@link ValueAllocationState} holding {@link Value#ILLEGAL}.
      */
     public static ValueAllocationState createUndefined(BasicBlock<?> block) {
-        return new ValueAllocationState(new RAValue(Value.ILLEGAL), null, block);
+        return new ValueAllocationState(RAValue.create(Value.ILLEGAL), null, block);
     }
 
     public Value getValue() {

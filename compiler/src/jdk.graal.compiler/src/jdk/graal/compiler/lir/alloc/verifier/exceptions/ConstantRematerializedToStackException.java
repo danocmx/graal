@@ -24,8 +24,8 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
-import jdk.graal.compiler.lir.alloc.verifier.RAVConstant;
-import jdk.graal.compiler.lir.alloc.verifier.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVConstant;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.alloc.verifier.ValueAllocationState;
 
 /**

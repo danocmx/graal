@@ -22,63 +22,62 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.values;
 
-import jdk.vm.ci.code.Register;
-import jdk.vm.ci.code.RegisterValue;
+import jdk.graal.compiler.lir.framemap.FrameMap;
+import jdk.vm.ci.code.StackSlot;
+import jdk.vm.ci.code.ValueUtil;
 
-/**
- * Wrap around {@link RegisterValue} to only index by the id of the {@link Register} it holds.
- */
-public class RAVRegister extends RAValue {
-    protected final RegisterValue registerValue;
+public class RAVConcreteStackSlot extends RAValue {
+    protected StackSlot value;
 
-    protected RAVRegister(RegisterValue registerValue) {
-        super(registerValue);
-
-        this.registerValue = registerValue;
+    protected RAVConcreteStackSlot(StackSlot value) {
+        super(value);
+        this.value = value;
     }
 
-    public RegisterValue getRegisterValue() {
-        return registerValue;
+    public StackSlot getStackSlot() {
+        return value;
     }
 
-    public Register getRegister() {
-        return registerValue.getRegister();
+    public boolean overlapsWith(FrameMap frameMap, RAVConcreteStackSlot other) {
+        var currSlot = ValueUtil.asStackSlot(this.value);
+        var otherSlot = ValueUtil.asStackSlot(other.getValue());
+
+        var totalFrameSize = frameMap.totalFrameSize();
+
+        var lowCurr = currSlot.getOffset(totalFrameSize);
+        var lowOther = otherSlot.getOffset(totalFrameSize);
+
+        var sizeCurr = currSlot.getValueKind().getPlatformKind().getSizeInBytes();
+        var sizeOther = otherSlot.getValueKind().getPlatformKind().getSizeInBytes();
+
+        var highCurr = lowCurr + sizeCurr;
+        var highOther = lowOther + sizeOther;
+
+        return highCurr > lowOther && highOther > lowCurr;
     }
 
     @Override
-    public RAVRegister asRegister() {
-        return this;
-    }
-
-    @Override
-    public boolean isRegister() {
+    public boolean isStackSlot() {
         return true;
     }
 
     @Override
     public int hashCode() {
-        return this.registerValue.getRegister().hashCode();
+        return value.getRawOffset();
     }
 
-    /**
-     * Equal RegisterValue on it's Register, not Register and kind, otherwise the same as a Value.
-     *
-     * @param other The reference object with which to compare.
-     * @return Are said values equal?
-     */
     @Override
     public boolean equals(Object other) {
-        if (other instanceof RAVRegister otherReg) {
-            return this.registerValue.getRegister().equals(otherReg.registerValue.getRegister());
+        if (other instanceof RAVConcreteStackSlot otherSlot) {
+            return value.getRawOffset() == otherSlot.value.getRawOffset() && value.getRawAddFrameSize() == otherSlot.value.getRawAddFrameSize();
         }
-
         return false;
     }
 
     @Override
     public String toString() {
-        return this.registerValue.getRegister().toString();
+        return "stack:" + value.getRawOffset();
     }
 }

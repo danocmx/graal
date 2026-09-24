@@ -27,11 +27,18 @@ package jdk.graal.compiler.lir.alloc.verifier;
 import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.InvalidRegisterUsedException;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVConcreteStackSlot;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
 
+import java.util.AbstractSet;
+import java.util.Comparator;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
  * Mapping between a location and allocation state that stores one of these:
@@ -53,33 +60,55 @@ public class AllocationStateMap {
     protected final BasicBlock<?> block;
 
     /**
-     * Internal map maintaining the mapping.
+     * Hash map for verifier's values and their allocation state.
      */
-    protected final Map<RAValue, AllocationState> internalMap;
+    private final Map<RAValue, AllocationState> valueMap;
+
+    /**
+     * Tree map for concrete stack slots and their allocation state for overlap detection.
+     */
+    private final TreeMap<RAVConcreteStackSlot, AllocationState> stackSlotMap;
 
     /**
      * Register allocation config describing which registers can be used.
      */
     protected final RegisterAllocationConfig registerAllocationConfig;
 
-    public AllocationStateMap(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig) {
-        internalMap = new EconomicHashMap<>();
+    protected final FrameMap frameMap;
+
+    public AllocationStateMap(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig, FrameMap frameMap) {
+        valueMap = new EconomicHashMap<>();
+        stackSlotMap = new TreeMap<>(Comparator.comparingInt(
+                o -> o.getStackSlot().getOffset(frameMap.totalFrameSize())));
+
         this.block = block;
         this.registerAllocationConfig = registerAllocationConfig;
+        this.frameMap = frameMap;
     }
 
     public AllocationStateMap(BasicBlock<?> block, AllocationStateMap other) {
-        internalMap = new EconomicHashMap<>(other.internalMap);
-        registerAllocationConfig = other.registerAllocationConfig;
+        valueMap = new EconomicHashMap<>(other.valueMap);
+        stackSlotMap = new TreeMap<>(other.stackSlotMap);
+
         this.block = block;
+        registerAllocationConfig = other.registerAllocationConfig;
+        frameMap = other.frameMap;
     }
 
-    public boolean has(RAValue key) {
-        return internalMap.containsKey(key);
+    public boolean containsKey(RAValue key) {
+        if (isHeldInStackSlotMap(key)) {
+            return stackSlotMap.containsKey((RAVConcreteStackSlot) key);
+        }
+
+        return valueMap.containsKey(key);
     }
 
     public AllocationState get(RAValue key) {
-        return this.internalMap.getOrDefault(key, AllocationState.getDefault());
+        if (isHeldInStackSlotMap(key)) {
+            return stackSlotMap.getOrDefault((RAVConcreteStackSlot) key, AllocationState.getDefault());
+        }
+
+        return this.valueMap.getOrDefault(key, AllocationState.getDefault());
     }
 
     /**
@@ -106,11 +135,32 @@ public class AllocationStateMap {
      * @param state State to store
      */
     public void putWithoutRegCheck(RAValue key, AllocationState state) {
-        if (state.isUnknown()) {
-            internalMap.remove(key); // Do not propagate unknown further
-        }
+        if (isHeldInStackSlotMap(key)) {
+            var keySlot = key.asConcreteStackSlotValue();
+            var lowerSlot = stackSlotMap.lowerKey(keySlot);
+            if (lowerSlot != null && lowerSlot.overlapsWith(frameMap, keySlot)) {
+                stackSlotMap.put(lowerSlot, UnknownAllocationState.INSTANCE);
+            }
 
-        internalMap.put(key, state);
+            var higherSlot = stackSlotMap.higherKey(keySlot);
+            if (higherSlot != null && higherSlot.overlapsWith(frameMap, keySlot)) {
+                stackSlotMap.put(higherSlot, UnknownAllocationState.INSTANCE);
+            }
+
+            if (state.isUnknown()) {
+                stackSlotMap.remove(keySlot);
+                return;
+            }
+
+            stackSlotMap.put(keySlot, state);
+        } else {
+            if (state.isUnknown()) {
+                valueMap.remove(key);
+                return;
+            }
+
+            valueMap.put(key, state);
+        }
     }
 
     /**
@@ -136,10 +186,12 @@ public class AllocationStateMap {
      */
     public Set<RAValue> getValueLocations(RAValue value) {
         Set<RAValue> locations = new EconomicHashSet<>();
-        for (var entry : this.internalMap.entrySet()) {
-            if (entry.getValue() instanceof ValueAllocationState valState) {
+        for (var entry : this.getEntrySet()) {
+            var location = entry.getKey();
+            var state = entry.getValue();
+            if (state instanceof ValueAllocationState valState) {
                 if (valState.getRAValue().equals(value)) {
-                    locations.add(entry.getKey());
+                    locations.add(location);
                 }
             }
         }
@@ -154,10 +206,11 @@ public class AllocationStateMap {
      */
     public boolean mergeWith(AllocationStateMap source) {
         boolean changed = false;
-        for (var entry : source.internalMap.entrySet()) {
+        for (var entry : source.getEntrySet()) {
             var location = entry.getKey();
             var incomingState = entry.getValue();
-            if (!this.internalMap.containsKey(location)) {
+            var currentState = this.get(location);
+            if (currentState == null) {
                 if (incomingState.isUnknown()) {
                     continue; // Unknown and Unknown can be skipped
                 }
@@ -168,7 +221,6 @@ public class AllocationStateMap {
                 continue;
             }
 
-            var currentState = this.internalMap.get(location);
             var newState = currentState.meet(incomingState, source.block, this.block);
             if (newState != null) {
                 changed = true;
@@ -178,9 +230,9 @@ public class AllocationStateMap {
         }
 
         // Process remaining locations from our map that have not yet been processed.
-        for (var entry : this.internalMap.entrySet()) {
+        for (var entry : this.getEntrySet()) {
             var location = entry.getKey();
-            if (source.internalMap.containsKey(location) || entry.getValue().isUnknown()) {
+            if (source.containsKey(location) || entry.getValue().isUnknown()) {
                 // Only care about unprocessed locations
                 continue;
             }
@@ -213,5 +265,60 @@ public class AllocationStateMap {
         if (!this.registerAllocationConfig.getAllocatableRegisters().contains(register)) {
             throw new InvalidRegisterUsedException(register, instruction, block);
         }
+    }
+
+    class MapEntrySet extends AbstractSet<Map.Entry<? extends RAValue, AllocationState>> {
+        @Override
+        public Iterator<Map.Entry<? extends RAValue, AllocationState>> iterator() {
+            var a = valueMap.entrySet().iterator();
+            var b = stackSlotMap.entrySet().iterator();
+
+            return new Iterator<>() {
+                @Override
+                public boolean hasNext() {
+                    return a.hasNext() || b.hasNext();
+                }
+
+                @Override
+                public Map.Entry<? extends RAValue, AllocationState> next() {
+                    if (a.hasNext()) {
+                        return a.next();
+                    }
+                    return b.next();
+                }
+
+                @Override
+                public void remove() {
+                    throw new UnsupportedOperationException();
+                }
+            };
+        }
+
+        @Override
+        public int size() {
+            return valueMap.size() + stackSlotMap.size();
+        }
+
+        @Override
+        public boolean contains(Object o) {
+            if (o instanceof RAValue raValue) {
+                if (isHeldInStackSlotMap(raValue)) {
+                    return stackSlotMap.containsKey((RAVConcreteStackSlot) raValue);
+                }
+
+                return valueMap.containsKey(raValue);
+            }
+
+            return false;
+        }
+    }
+
+    protected Set<Map.Entry<? extends RAValue, AllocationState>> getEntrySet() {
+        return new MapEntrySet();
+    }
+
+    protected boolean isHeldInStackSlotMap(RAValue key) {
+        /* Overlap is only checked if a FrameMap is defined */
+        return key instanceof RAVConcreteStackSlot && frameMap != null;
     }
 }

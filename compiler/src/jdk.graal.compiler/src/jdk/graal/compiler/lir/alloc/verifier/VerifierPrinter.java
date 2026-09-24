@@ -28,12 +28,16 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.debug.LogStream;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.CalleeSavedRegisterNotRetrievedException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.MissingReferenceException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVError;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.ValueNotInRegisterException;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVRegister;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 
 import java.io.OutputStream;
 
+// TODO: find a way to prune blocks that are not relevant to reported violations
 public class VerifierPrinter {
     public static int PADDING = 4;
     public static int INDENT = 4;
@@ -161,8 +165,9 @@ public class VerifierPrinter {
 
         out.println("Entry state:");
         out.adjustIndentation(INDENT);
-        for (var location : blockVerifierState.values.internalMap.keySet()) {
-            var state = blockVerifierState.values.get(location);
+        for (var entry : blockVerifierState.values.getEntrySet()) {
+            var location = entry.getKey();
+            var state = entry.getValue();
             if (state.isUnknown()) {
                 continue;
             }
@@ -404,8 +409,9 @@ public class VerifierPrinter {
     private void printOtherReferences(MissingReferenceException exception) {
         out.println("Other references:");
         out.adjustIndentation(INDENT);
-        for (var location : exception.blockVerifierState.values.internalMap.keySet()) {
-            var state = exception.blockVerifierState.values.get(location);
+        for (var entry : exception.blockVerifierState.values.getEntrySet()) {
+            var location = entry.getKey();
+            var state = entry.getValue();
             if (state.isUnknown() || state.isConflicted()) {
                 continue;
             }

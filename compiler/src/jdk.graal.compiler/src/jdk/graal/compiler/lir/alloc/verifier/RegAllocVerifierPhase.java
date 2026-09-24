@@ -42,7 +42,12 @@ import jdk.graal.compiler.lir.Variable;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.UnknownInstructionError;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVConstant;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.graal.compiler.lir.amd64.AMD64Move;
+import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.lir.gen.LIRGenerationResult;
 import jdk.graal.compiler.lir.phases.LIRPhase;
 import jdk.graal.compiler.options.Option;
@@ -194,11 +199,19 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             }
         }
 
-        verifyAllocation(lir, preAllocMap, context);
+        verifyAllocation(lir, getFrameMap(lirGenRes), preAllocMap, context);
 
         if (stackSlotAllocator != null && !verifyStackAlloc) {
             stackSlotAllocator.apply(target, lirGenRes, context);
         }
+    }
+
+    protected FrameMap getFrameMap(LIRGenerationResult lirGenRes) {
+        if (stackSlotAllocator != null && Options.VerifyStackAllocator.getValue(lirGenRes.getLIR().getOptions())) {
+            return lirGenRes.getFrameMap();
+        }
+
+        return null;
     }
 
     /**
@@ -463,13 +476,14 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
      * Use information before allocation to verify the output of allocator(s).
      *
      * @param lir LIR
+     * @param frameMap Frame map after stack allocation
      * @param preallocMap Map of instructions before allocation
      * @param context Allocation context
      */
-    protected void verifyAllocation(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext context) {
+    protected void verifyAllocation(LIR lir, FrameMap frameMap, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext context) {
         var instructions = getVerifierInstructions(lir, preallocMap, context);
         var phiResolver = new FromUsageResolverGlobal(lir, instructions);
-        var verifier = new RegAllocVerifier(lir, instructions, getRegisterAllocationConfig(context), allocator);
+        var verifier = new RegAllocVerifier(lir, frameMap, instructions, getRegisterAllocationConfig(context), allocator);
 
         boolean failOnFirst = Options.RAVFailOnFirst.getValue(lir.getOptions());
 
@@ -480,8 +494,11 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         try (DebugCloseable t = VerifierTimer.start(lir.getDebug())) {
             verifier.run(failOnFirst);
         } catch (RAVException e) {
-            var debugCtx = lir.getDebug();
+            // TODO: always create the debug file when this happens
+            // because the message itself is useless without having
+            // access to LIR
 
+            var debugCtx = lir.getDebug();
             if (debugCtx.isDumpEnabled(DebugContext.VERBOSE_LEVEL)) {
                 var debugPath = debugCtx.getDumpPath(".rav.txt", false);
 

@@ -32,6 +32,8 @@ import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.SpilledConstantException;
 import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.util.EconomicHashMap;
 
 import java.io.OutputStream;
@@ -81,8 +83,11 @@ public class RegAllocVerifier {
      */
     protected RegisterAllocationPhase allocator;
 
-    public RegAllocVerifier(LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig, RegisterAllocationPhase allocator) {
+    protected FrameMap frameMap;
+
+    public RegAllocVerifier(LIR lir, FrameMap frameMap, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig, RegisterAllocationPhase allocator) {
         this.lir = lir;
+        this.frameMap = frameMap;
         this.registerAllocationConfig = registerAllocationConfig;
 
         var cfg = lir.getControlFlowGraph();
@@ -151,7 +156,7 @@ public class RegAllocVerifier {
     }
 
     protected BlockVerifierState createNewBlockState(BasicBlock<?> block) {
-        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap, allocator, lir.getOptions());
+        return new BlockVerifierState(block, registerAllocationConfig, calleeSaveMap, allocator, frameMap, lir.getOptions());
     }
 
     /**
@@ -205,6 +210,10 @@ public class RegAllocVerifier {
                     BlockVerifierState state, RAVInstruction.Op op) {
         for (int j = 0; j < op.alive.count; j++) {
             var curr = op.alive.curr[j];
+            if (curr == null) {
+                continue;
+            }
+
             var allocState = state.values.get(curr);
             if (!(allocState instanceof ValueAllocationState valueAllocationState)) {
                 continue;
@@ -228,7 +237,7 @@ public class RegAllocVerifier {
             for (var instr : instructions) {
                 try {
                     state.check(instr);
-                    state.update(instr);
+                    state.update(instr); // TODO: make state.update never fail
                 } catch (SpilledConstantException e) {
                     spilledConstantExceptions.put(e.valueAllocationState.getRAValue(), e);
                 } catch (RAVException e) {

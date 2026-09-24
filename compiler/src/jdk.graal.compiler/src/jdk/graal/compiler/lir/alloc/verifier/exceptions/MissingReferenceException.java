@@ -28,7 +28,7 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.lir.alloc.verifier.AllocationState;
 import jdk.graal.compiler.lir.alloc.verifier.BlockVerifierState;
 import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
-import jdk.graal.compiler.lir.alloc.verifier.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 
 @SuppressWarnings("serial")
 public class MissingReferenceException extends RAVException {

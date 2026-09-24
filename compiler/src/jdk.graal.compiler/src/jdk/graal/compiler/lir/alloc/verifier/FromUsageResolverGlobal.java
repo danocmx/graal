@@ -28,6 +28,8 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
 import jdk.graal.compiler.lir.StandardOp;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.graal.compiler.lir.dfa.UniqueWorkList;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
@@ -461,12 +463,18 @@ public class FromUsageResolverGlobal {
                 var orig = jump.alive.orig[i];
                 if (!RAValue.kindsEqual(orig, location)) {
                     /*
-                     * TestCase: DerivedOopTest <pre> B3: rdx|QWORD[*] = REGMOVE rcx|QWORD[.+] <--
-                     * Type is cast here [] = JUMP [] [v8|QWORD[.+] -> rdx|QWORD[*]] [] <-- Needs
-                     * the type change B5: [v12|QWORD[*] -> rdx|QWORD[*]] = LABEL [] [] [] [] =
-                     * BLACKHOLE [v12|QWORD[*] -> rdx|QWORD[*]] [] [] </pre>
+                     * TestCase: DerivedOopTest
+                     *
+                     * @formatter:off
+                     * B3:
+                     * rdx|QWORD[*] = REGMOVE rcx|QWORD[.+]                    <-- Type is cast here
+                     * [] = JUMP B3 -> B5 [] [v8|QWORD[.+] -> rdx|QWORD[*]] [] <-- Needs the type change
+                     *
+                     * B5:
+                     * [v12|QWORD[*] -> rdx|QWORD[*]] = LABEL [] [] [] []
+                     * BLACKHOLE [v12|QWORD[*] -> rdx|QWORD[*]] [] []
+                     * @formatter:on
                      */
-
                     jump.alive.orig[i] = RAValue.cast(orig, location);
                 }
 

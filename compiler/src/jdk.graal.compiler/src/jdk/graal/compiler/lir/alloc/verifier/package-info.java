@@ -240,7 +240,7 @@
  * {@link jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException}</li>
  * </ul>
  *
- * <h3>Collect references</h3>
+ * <h3>Collecting references</h3>
  *
  * The verifier uses {@link jdk.graal.compiler.lir.dfa.LocationMarker} to collect live object
  * reference information before {@link jdk.graal.compiler.lir.phases.FinalCodeAnalysisStage final
