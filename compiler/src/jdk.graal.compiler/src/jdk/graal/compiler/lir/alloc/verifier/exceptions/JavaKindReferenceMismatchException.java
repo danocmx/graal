@@ -26,23 +26,23 @@ package jdk.graal.compiler.lir.alloc.verifier.exceptions;
 
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
-import jdk.vm.ci.meta.AllocatableValue;
+import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.vm.ci.meta.JavaKind;
 
 @SuppressWarnings("serial")
 public class JavaKindReferenceMismatchException extends RAVException {
-    public final AllocatableValue orig;
-    public final AllocatableValue curr;
+    public final RAValue orig;
+    public final RAValue curr;
     public final JavaKind kind;
 
-    public JavaKindReferenceMismatchException(AllocatableValue orig, AllocatableValue curr, JavaKind kind, RAVInstruction.Base instruction, BasicBlock<?> block) {
+    public JavaKindReferenceMismatchException(RAValue orig, RAValue curr, JavaKind kind, RAVInstruction.Base instruction, BasicBlock<?> block) {
         super(getMessage(orig, curr, kind), instruction, block);
         this.orig = orig;
         this.curr = curr;
         this.kind = kind;
     }
 
-    public static String getMessage(AllocatableValue orig, AllocatableValue curr, JavaKind kind) {
+    public static String getMessage(RAValue orig, RAValue curr, JavaKind kind) {
         if (kind.isObject()) {
             return orig + " -> " + curr + " not an object java kind when marked as a reference";
         } else {

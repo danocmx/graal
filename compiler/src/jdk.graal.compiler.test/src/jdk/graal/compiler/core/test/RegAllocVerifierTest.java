@@ -161,6 +161,15 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
         }
 
         @Override
+        protected void run(TargetDescription target, LIRGenerationResult lirGenRes, AllocationContext context) {
+            try {
+                super.run(target, lirGenRes, context);
+            } catch (RAVException e) {
+                exception = e;
+            }
+        }
+
+        @Override
         protected final BlockMap<List<RAVInstruction.Base>> getVerifierInstructions(LIR lir, Map<LIRInstruction, RAVInstruction.Base> preallocMap, AllocationContext context) {
             var instructions = super.getVerifierInstructions(lir, preallocMap, context);
             modifyVerifierInstructions(lir, instructions, context);
@@ -1271,8 +1280,17 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
         @Override
         protected FrameMap getFrameMap(LIRGenerationResult lirGenRes) {
-            lirGenRes.buildFrameMap(); // Should throw so can be built here.
-            return lirGenRes.getFrameMap();
+            return new FrameMap(lirGenRes.getFrameMapBuilder().getCodeCache(), null, null) {
+                @Override
+                public int totalFrameSize() {
+                    return 0;
+                }
+
+                @Override
+                public int currentFrameSize() {
+                    return 0;
+                }
+            };
         }
 
         protected RAVConcreteStackSlot createStackSlot(LIRKind kind, int offset) {
@@ -1287,10 +1305,13 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
             // Disable any inlining to allow for function calls
             newOptions = new OptionValues(options,
                             RegAllocVerifierPhase.Options.RAVFailOnFirst, true,
+                            RegAllocVerifierPhase.Options.PrintRAVCFG, false,
                             HighTier.Options.Inline, false,
                             BytecodeParserOptions.InlineDuringParsing, false);
         } else {
-            newOptions = new OptionValues(options, RegAllocVerifierPhase.Options.RAVFailOnFirst, true);
+            newOptions = new OptionValues(options,
+                            RegAllocVerifierPhase.Options.RAVFailOnFirst, true,
+                            RegAllocVerifierPhase.Options.PrintRAVCFG, false);
         }
 
         return super.compile(installedCodeOwner, graph, compilationResult, compilationId, newOptions);
@@ -1378,12 +1399,7 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
 
         compile(getResolvedJavaMethod(methodName), null);
         Assert.assertNull(exception);
-
-        try {
-            compileModified(methodName);
-        } catch (RAVException e) {
-            exception = e;
-        }
+        compileModified(methodName);
 
         return assertException(expectedException);
     }
@@ -1410,14 +1426,19 @@ public class RegAllocVerifierTest extends GraalCompilerTest {
     }
 
     public static int diamond(int a, int b, int c, int d, int e) {
-        int x;
+        int x = 0;
+        int y = 0;
         if (a > 0) {
             x = b * e;
         } else {
-            x = c + d + 2 * b;
+            y = c + d + 2 * b;
         }
 
-        return x + a;
+        if (c > 2) {
+            y = d * a;
+        }
+
+        return a + x + y;
     }
 
     public static int sum(int a, int b) {

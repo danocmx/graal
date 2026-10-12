@@ -33,8 +33,6 @@ import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.graal.compiler.lir.dfa.UniqueWorkList;
 import jdk.graal.compiler.util.EconomicHashMap;
 import jdk.graal.compiler.util.EconomicHashSet;
-import jdk.vm.ci.meta.AllocatableValue;
-import jdk.vm.ci.meta.Value;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -97,14 +95,7 @@ public class FromUsageResolverGlobal {
      * Variable and a block where it's coming from (last jump instruction), this variable is aliased
      * by the succeeding label, which needs to be resolved first, before this one can be.
      */
-    class AliasPair {
-        final RAVariable variable;
-        final BasicBlock<?> block;
-
-        AliasPair(RAVariable variable, BasicBlock<?> block) {
-            this.variable = variable;
-            this.block = block;
-        }
+    record AliasPair(RAVariable variable, BasicBlock<?> block) {
     }
 
     /**
@@ -127,7 +118,7 @@ public class FromUsageResolverGlobal {
      * Information about locations of variables found when traversing LIR, from the first usage,
      * handling all related moves up until the label instruction that defined the variable.
      */
-    protected final class BlockUsage {
+    protected static final class BlockUsage {
         protected final Map<RAVariable, RAValue> locations;
         protected boolean processed;
 
@@ -365,19 +356,18 @@ public class FromUsageResolverGlobal {
 
     protected void handleStateValues(List<RAVInstruction.StateValuePair> pairs, RAVInstruction.Op op) {
         for (var values : pairs) {
-            for (int i = 0; i < values.kinds.length; i++) {
-                var origJV = values.orig[i];
-                if (!(origJV instanceof AllocatableValue orig) || Value.ILLEGAL.equals(orig)) {
+            for (int i = 0; i < values.getCount(); i++) {
+                var orig = values.getOrigAt(i);
+                if (orig == null) {
                     continue;
                 }
 
-                var currJV = values.curr[i];
-                if (!(currJV instanceof AllocatableValue curr) || Value.ILLEGAL.equals(curr)) {
+                var curr = values.getCurrAt(i);
+                if (curr == null) {
                     continue;
                 }
 
-                // TODO: create RAValue instances for state values only once
-                handleOperand(RAValue.create(orig), RAValue.create(curr), op);
+                handleOperand(orig, curr, op);
             }
         }
     }

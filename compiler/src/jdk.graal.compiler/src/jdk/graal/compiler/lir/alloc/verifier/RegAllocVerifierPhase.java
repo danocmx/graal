@@ -30,6 +30,7 @@ import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.debug.DebugCloseable;
 import jdk.graal.compiler.debug.DebugContext;
+import jdk.graal.compiler.debug.LogStream;
 import jdk.graal.compiler.debug.TimerKey;
 import jdk.graal.compiler.lir.ConstantValue;
 import jdk.graal.compiler.lir.LIR;
@@ -43,6 +44,8 @@ import jdk.graal.compiler.lir.alloc.RegisterAllocationPhase;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.UnknownInstructionError;
+import jdk.graal.compiler.lir.alloc.verifier.printer.TextVerifierPrinter;
+import jdk.graal.compiler.lir.alloc.verifier.printer.VerifierPrinter;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAVConstant;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
@@ -74,7 +77,9 @@ import java.util.Set;
  * actually stored in current locations chosen by the allocator.
  *
  * <p>
- * Needs to extend the RegisterAllocationPhase to not throw an exception.
+ * Needs to extend the {@link RegisterAllocationPhase} to not throw an exception that register
+ * allocation is missing, because this class wraps around the allocator to gain access to
+ * instructions before and after allocation.
  * </p>
  */
 @SuppressWarnings("try")
@@ -82,7 +87,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
     public static class Options {
         // @formatter:off
         @Option(help = "Verify that register allocation is indeed, correct", type = OptionType.Debug)
-        public static final OptionKey<Boolean> EnableRAVerifier = new OptionKey<>(true);
+        public static final OptionKey<Boolean> EnableRAVerifier = new OptionKey<>(false);
 
         @Option(help = "Verify output of stack allocator with register allocator", type = OptionType.Debug)
         public static final OptionKey<Boolean> VerifyStackAllocator = new OptionKey<>(true);
@@ -105,6 +110,13 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
          */
         @Option(help = "Check the location of constant materialization", type = OptionType.Debug)
         public static final OptionKey<Boolean> CheckConstRematLocation = new OptionKey<>(true);
+
+        /**
+         * This setting is disabled for tests, otherwise the cfg is always printed
+         * when an exception is thrown, because it gives more context into what happened.
+         */
+        @Option(help = "Print the CFG into a .rav.txt file on exception")
+        public static final OptionKey<Boolean> PrintRAVCFG = new OptionKey<>(true);
         // @formatter:on
     }
 
@@ -206,6 +218,10 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         }
     }
 
+    /**
+     * @return Retrieves the frame map for stack overlap validation.
+     *         Frame map is only available if stack allocation was performed.
+     */
     protected FrameMap getFrameMap(LIRGenerationResult lirGenRes) {
         if (stackSlotAllocator != null && Options.VerifyStackAllocator.getValue(lirGenRes.getLIR().getOptions())) {
             return lirGenRes.getFrameMap();
@@ -217,7 +233,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
     /**
      * Which operation generated register as a symbol and the index of it, in the output array.
      */
-    class OutValue {
+    static class OutValue {
         int idx;
         RAVInstruction.Op op;
 
@@ -246,6 +262,7 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
             for (var instruction : instructions) {
                 boolean outputSpeculative = false;
                 boolean inputSpeculative = false;
+
                 if (instruction.isValueMoveOp()) {
                     var valueMov = StandardOp.ValueMoveOp.asValueMoveOp(instruction);
                     var input = valueMov.getInput();
@@ -494,16 +511,12 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         try (DebugCloseable t = VerifierTimer.start(lir.getDebug())) {
             verifier.run(failOnFirst);
         } catch (RAVException e) {
-            // TODO: always create the debug file when this happens
-            // because the message itself is useless without having
-            // access to LIR
-
             var debugCtx = lir.getDebug();
-            if (debugCtx.isDumpEnabled(DebugContext.VERBOSE_LEVEL)) {
+            if (Options.PrintRAVCFG.getValue(lir.getOptions())) {
                 var debugPath = debugCtx.getDumpPath(".rav.txt", false);
 
                 try (PrintStream output = new PrintStream(debugPath)) {
-                    verifier.getPrinter(output).printIRWithException(e);
+                    createPrinter(output, verifier, List.of(e));
                 } catch (FileNotFoundException ignored) {
                 }
 
@@ -516,17 +529,21 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
         } catch (RAVFailedVerificationException e) {
             var debugCtx = lir.getDebug();
 
-            if (debugCtx.isDumpEnabled(DebugContext.VERBOSE_LEVEL)) {
+            if (Options.PrintRAVCFG.getValue(lir.getOptions())) {
                 var debugPath = debugCtx.getDumpPath(".rav.txt", false);
 
                 try (PrintStream output = new PrintStream(debugPath)) {
-                    verifier.getPrinter(output).printIRWithMultiExceptions(e);
+                    createPrinter(output, verifier, e.exceptions).print();
                 } catch (FileNotFoundException ignored) {
                 }
             }
 
             throw e;
         }
+    }
+
+    private VerifierPrinter createPrinter(PrintStream out, RegAllocVerifier verifier, List<RAVException> exceptions) {
+        return new TextVerifierPrinter(new LogStream(out), verifier.getLIR(), verifier.getBlockInstructions(), verifier.getBlockEntryStates(), exceptions);
     }
 
     /**
@@ -634,11 +651,11 @@ public class RegAllocVerifierPhase extends RegisterAllocationPhase {
 
                 var speculativeMoves = opRAVInstr.getSpeculativeMoveList();
                 for (var move : speculativeMoves) {
-                    if (presentInstructions.contains(move.lirInstruction)) {
+                    if (presentInstructions.contains(move.lirInstruction())) {
                         continue;
                     }
 
-                    synonymMap.addSynonym(move.srcVariable, move.dstVariable);
+                    synonymMap.addSynonym(move.srcVariable(), move.dstVariable());
                 }
             }
 

@@ -53,12 +53,12 @@ public final class ConflictedAllocationState extends AllocationState {
         addConflictedValue(state2);
     }
 
-    protected ConflictedAllocationState(ConflictedAllocationState other) {
+    ConflictedAllocationState(ConflictedAllocationState other) {
         this.conflictedStates = new EconomicHashSet<>();
         this.parents = new EconomicHashSet<>(other.parents);
     }
 
-    protected void addConflictedValue(ValueAllocationState state) {
+    void addConflictedValue(ValueAllocationState state) {
         if (this.conflictedStates.contains(state)) {
             return;
         }

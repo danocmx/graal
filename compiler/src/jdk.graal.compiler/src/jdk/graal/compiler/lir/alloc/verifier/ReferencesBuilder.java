@@ -56,7 +56,7 @@ import java.util.Set;
  * </p>
  */
 public class ReferencesBuilder {
-    class ReferenceSet extends ValueSet<ReferenceSet> {
+    static class ReferenceSet extends ValueSet<ReferenceSet> {
         protected Set<RAValue> references;
 
         ReferenceSet() {
@@ -105,7 +105,7 @@ public class ReferencesBuilder {
         }
     }
 
-    class ReferenceMarker extends LocationMarker<ReferenceSet> {
+    static class ReferenceMarker extends LocationMarker<ReferenceSet> {
         private final List<RegisterAttributes> registerAttributes;
         protected final Map<LIRInstruction, RAVInstruction.Base> preAllocMap;
 
@@ -122,10 +122,10 @@ public class ReferencesBuilder {
 
         /**
          * Only process values that are registers (that can contain references and are allocatable)
-         * and stack slots, where kind cannot be Illegal.
+         * and stack slots, where kind cannot be {@link LIRKind#Illegal}.
          *
          * <p>
-         * Take from jdk.graal.compiler.lir.dfa.LocationMarkerPhase.Marker#shouldProcessValue
+         * Taken from {@code jdk.graal.compiler.lir.dfa.LocationMarkerPhase.Marker#shouldProcessValue}
          * </p>
          *
          * @param operand Value to be processed

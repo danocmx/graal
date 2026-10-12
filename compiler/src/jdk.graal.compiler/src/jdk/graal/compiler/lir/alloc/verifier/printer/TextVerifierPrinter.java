@@ -22,85 +22,87 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package jdk.graal.compiler.lir.alloc.verifier;
+package jdk.graal.compiler.lir.alloc.verifier.printer;
 
+import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
+import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.debug.LogStream;
+import jdk.graal.compiler.lir.LIR;
+import jdk.graal.compiler.lir.alloc.verifier.AllocationState;
+import jdk.graal.compiler.lir.alloc.verifier.BlockVerifierState;
+import jdk.graal.compiler.lir.alloc.verifier.ConflictedAllocationState;
+import jdk.graal.compiler.lir.alloc.verifier.RAVInstruction;
+import jdk.graal.compiler.lir.alloc.verifier.UnknownAllocationState;
+import jdk.graal.compiler.lir.alloc.verifier.ValueAllocationState;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.CalleeSavedRegisterNotRetrievedException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.MissingReferenceException;
-import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVError;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
-import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.ValueNotInRegisterException;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAVRegister;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 
-import java.io.OutputStream;
+import java.util.List;
 
-// TODO: find a way to prune blocks that are not relevant to reported violations
-public class VerifierPrinter {
-    public static int PADDING = 4;
-    public static int INDENT = 4;
+public class TextVerifierPrinter implements VerifierPrinter {
+    public static final int INDENT = 4;
 
-    protected final LogStream out;
-    protected final RegAllocVerifier verifier;
+    protected LogStream out;
+    protected LIR lir;
+    protected BlockMap<List<RAVInstruction.Base>> blockInstructions;
+    protected BlockMap<BlockVerifierState> blockEntryStates;
+    protected List<RAVException> exceptions;
+    protected RegisterAllocationConfig registerAllocationConfig;
 
-    protected VerifierPrinter(OutputStream out, RegAllocVerifier verifier) {
-        this.out = new LogStream(out);
-        this.verifier = verifier;
+    public TextVerifierPrinter(LogStream out, LIR lir, BlockMap<List<RAVInstruction.Base>> blockInstructions,
+                               BlockMap<BlockVerifierState> blockEntryStates, List<RAVException> exceptions) {
+        this.out = out;
+        this.lir = lir;
+        this.blockInstructions = blockInstructions;
+        this.blockEntryStates = blockEntryStates;
+        this.exceptions = exceptions;
     }
 
     public void print() {
-        int longestRAVInstruction = 0;
-        for (var blockId : verifier.lir.getBlocks()) {
-            var block = verifier.lir.getBlockById(blockId);
-
-            for (var instruction : verifier.blockInstructions.get(block)) {
-                int instructionLength = instruction.toString().length();
-                if (instructionLength > longestRAVInstruction) {
-                    longestRAVInstruction = instruction.toString().length();
-                }
-            }
+        out.println("Register Allocation Verification failures:");
+        for (var exception : exceptions) {
+            out.println(" - " + exception.getMessage());
+            out.println("   - Found at " + exception.getLocationString());
         }
+        out.println("");
 
-        for (var blockId : verifier.lir.getBlocks()) {
-            var block = verifier.lir.getBlockById(blockId);
+        for (var blockId : lir.getBlocks()) {
+            var block = lir.getBlockById(blockId);
 
             printBlockHeader(block);
+            if (isExceptionInBlock(block)) {
+                out.println("^------------ Exception thrown here");
+                out.println();
+            }
 
             out.adjustIndentation(INDENT);
             printEntryState(block);
-            for (var instruction : verifier.blockInstructions.get(block)) {
-                var instructionString = instruction.toString();
-                var difference = longestRAVInstruction - instructionString.length();
 
-                var space = new String(new char[difference + PADDING]).replace("\0", " ");
+            for (var instruction : blockInstructions.get(block)) {
 
-                String lirInstrString;
-                if (instruction.lirInstruction == null) {
-                    /*
-                     * Test cases do this, here we just indicate that it's not part of LIR and never
-                     * was.
-                     */
-                    lirInstrString = "<missing lir instruction>";
-                } else {
-                    lirInstrString = instruction.lirInstruction.toString();
+                if (isExceptionInInstruction(instruction)) {
+                    out.println("");
                 }
 
-                out.println(instructionString + space + lirInstrString);
-                if (instruction instanceof RAVInstruction.Op op) {
-                    out.adjustIndentation(INDENT);
-                    if (op.lirInstruction.hasState()) {
-                        out.println("State: " + op.stateValues);
+                printInstruction(instruction);
+                for (var e : exceptions) {
+                    if (e.instruction == instruction) {
+                        printExceptionInformation(e);
                     }
-
-                    if (op.references != null) {
-                        out.println("References: " + op.references);
-                    }
-                    out.adjustIndentation(-INDENT);
                 }
-
             }
+
+            for (var e : exceptions) {
+                if (e.instruction == null) {
+                    printExceptionInformation(e);
+                }
+            }
+
             out.adjustIndentation(-INDENT);
             out.println();
         }
@@ -153,7 +155,7 @@ public class VerifierPrinter {
     }
 
     protected void printEntryState(BasicBlock<?> block) {
-        var blockVerifierState = verifier.blockEntryStates.get(block);
+        var blockVerifierState = blockEntryStates.get(block);
         if (blockVerifierState == null) {
             // If error occurred during creation of entry states, it might not be defined.
             return;
@@ -189,12 +191,11 @@ public class VerifierPrinter {
             }
             case ConflictedAllocationState st -> {
                 StringBuilder str = new StringBuilder();
-                str.append("Conflicted {\n");
+                str.append("Conflicted {");
                 var conflictedStates = st.getConflictedStates();
                 for (var valueAllocState : conflictedStates) {
                     if (valueAllocState.isUndefinedFromBlock()) {
                         str.append("Value unknown from ").append(valueAllocState.getBlock());
-                        continue;
                     } else {
                         str.append(valueAllocState.getValue());
                         if (valueAllocState.getBlock() != null) {
@@ -212,7 +213,6 @@ public class VerifierPrinter {
                 yield str.append("}").toString();
             }
             case UnknownAllocationState st -> "Unknown";
-            default -> throw new RAVError("Unexpected value: " + state);
         };
 
         out.println(location + " -> " + stateStr);
@@ -242,112 +242,16 @@ public class VerifierPrinter {
                 yield str.toString();
             }
             case UnknownAllocationState st -> "Unknown";
-            default -> throw new RAVError("Unexpected value: " + state);
         };
 
         out.println(location + " -> " + stateStr);
-    }
-
-    protected void printIRWithException(RAVException exception) {
-        out.println("Register Allocation Verification failure:");
-        out.println(exception.getMessage());
-        out.println("Sourced from " + exception.getLocationString());
-        out.println();
-
-        for (var blockId : verifier.lir.getBlocks()) {
-            var block = verifier.lir.getBlockById(blockId);
-
-            printBlockHeader(block);
-            if (block.equals(exception.block)) {
-                out.println("^------------ Exception thrown here");
-                out.println();
-            }
-
-            out.adjustIndentation(INDENT);
-            printEntryState(block);
-            for (var instruction : verifier.blockInstructions.get(block)) {
-                if (exception.instruction == instruction) {
-                    out.println("");
-                }
-
-                printInstruction(instruction);
-                if (exception.instruction == instruction) {
-                    printExceptionInformation(exception);
-                }
-            }
-
-            if (exception.instruction == null) {
-                printExceptionInformation(exception);
-            }
-
-            out.adjustIndentation(-INDENT);
-            out.println();
-        }
-    }
-
-    protected void printIRWithMultiExceptions(RAVFailedVerificationException exception) {
-        out.println("Register Allocation Verification failure:");
-        out.println(exception.getMessage());
-        out.println();
-
-        for (var blockId : verifier.lir.getBlocks()) {
-            var block = verifier.lir.getBlockById(blockId);
-
-            printBlockHeader(block);
-
-            boolean inBlock = false;
-            for (var e : exception.exceptions) {
-                if (block.equals(e.block)) {
-                    inBlock = true;
-                    break;
-                }
-            }
-
-            if (inBlock) {
-                out.println("^------------ Exception thrown here");
-                out.println();
-            }
-
-            out.adjustIndentation(INDENT);
-            printEntryState(block);
-            for (var instruction : verifier.blockInstructions.get(block)) {
-
-                boolean inInstruction = false;
-                for (var e : exception.exceptions) {
-                    if (e.instruction == instruction) {
-                        inInstruction = true;
-                        break;
-                    }
-                }
-
-                if (inInstruction) {
-                    out.println("");
-                }
-
-                printInstruction(instruction);
-                for (var e : exception.exceptions) {
-                    if (e.instruction == instruction) {
-                        printExceptionInformation(e);
-                    }
-                }
-            }
-
-            for (var e : exception.exceptions) {
-                if (e.instruction == null) {
-                    printExceptionInformation(e);
-                }
-            }
-
-            out.adjustIndentation(-INDENT);
-            out.println();
-        }
     }
 
     protected void printInstruction(RAVInstruction.Base instruction) {
         out.println(instruction.toString());
         if (instruction instanceof RAVInstruction.Op op) {
             out.adjustIndentation(INDENT);
-            if (op.lirInstruction.hasState()) {
+            if (op.getLIRInstruction().hasState()) {
                 out.println("State: " + op.stateValues);
             }
 
@@ -396,7 +300,7 @@ public class VerifierPrinter {
 
     private void printCalleeSavedValues(CalleeSavedRegisterNotRetrievedException exception) {
         out.println("Callee-saved values:");
-        var registers = verifier.registerAllocationConfig.getRegisterConfig().getCalleeSaveRegisters();
+        var registers = registerAllocationConfig.getRegisterConfig().getCalleeSaveRegisters();
         out.adjustIndentation(INDENT);
         for (var reg : registers) {
             var regValue = new RAVRegister(reg.asValue());
@@ -425,5 +329,24 @@ public class VerifierPrinter {
             printAllocationStateInDetail(location, state);
         }
         out.adjustIndentation(-INDENT);
+    }
+
+    protected boolean isExceptionInBlock(BasicBlock<?> block) {
+        for (var e : exceptions) {
+            if (block.equals(e.block)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected boolean isExceptionInInstruction(RAVInstruction.Base instruction) {
+        for (var e : exceptions) {
+            if (e.instruction == instruction) {
+                return true;
+            }
+        }
+        return false;
     }
 }

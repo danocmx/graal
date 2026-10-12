@@ -28,6 +28,7 @@ import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
 import jdk.graal.compiler.core.common.cfg.BlockMap;
 import jdk.graal.compiler.lir.LIR;
+import jdk.graal.compiler.lir.alloc.verifier.exceptions.InvalidRegisterUsedException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.RAVFailedVerificationException;
 import jdk.graal.compiler.lir.alloc.verifier.exceptions.SpilledConstantException;
@@ -36,7 +37,6 @@ import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.util.EconomicHashMap;
 
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -83,6 +83,9 @@ public class RegAllocVerifier {
      */
     protected RegisterAllocationPhase allocator;
 
+    /**
+     * Frame map used for stack overlap validation.
+     */
     protected FrameMap frameMap;
 
     public RegAllocVerifier(LIR lir, FrameMap frameMap, BlockMap<List<RAVInstruction.Base>> blockInstructions, RegisterAllocationConfig registerAllocationConfig, RegisterAllocationPhase allocator) {
@@ -98,6 +101,22 @@ public class RegAllocVerifier {
 
         this.calleeSaveMap = new CalleeSaveMap(registerAllocationConfig.getRegisterConfig());
         this.allocator = allocator;
+    }
+
+    public LIR getLIR() {
+        return lir;
+    }
+
+    public BlockMap<List<RAVInstruction.Base>> getBlockInstructions() {
+        return blockInstructions;
+    }
+
+    public BlockMap<BlockVerifierState> getBlockEntryStates() {
+        return blockEntryStates;
+    }
+
+    public RegisterAllocationConfig getRegisterAllocationConfig() {
+        return registerAllocationConfig;
     }
 
     /**
@@ -179,6 +198,7 @@ public class RegAllocVerifier {
                     spilledConstantExceptions.put(e.valueAllocationState.getRAValue(), e);
                 }
 
+                checkInstructionOutputLocationValidity(instr, block);
                 state.update(instr);
             }
 
@@ -237,11 +257,14 @@ public class RegAllocVerifier {
             for (var instr : instructions) {
                 try {
                     state.check(instr);
-                    state.update(instr); // TODO: make state.update never fail
+                    checkInstructionOutputLocationValidity(instr, block);
                 } catch (SpilledConstantException e) {
                     spilledConstantExceptions.put(e.valueAllocationState.getRAValue(), e);
                 } catch (RAVException e) {
                     exceptions.add(e);
+                } finally {
+                    // state.update can never throw an exception that is related to the verification.
+                    state.update(instr);
                 }
             }
 
@@ -265,6 +288,52 @@ public class RegAllocVerifier {
 
         if (!exceptions.isEmpty()) {
             throw new RAVFailedVerificationException(exceptions);
+        }
+    }
+
+    protected void checkInstructionOutputLocationValidity(RAVInstruction.Base instruction, BasicBlock<?> block) {
+        switch (instruction) {
+            case RAVInstruction.Op op -> {
+                for (int i = 0; i < op.dests.count; i++) {
+                    if (op.dests.curr[i].equals(op.dests.orig[i])) {
+                        continue;
+                    }
+                    checkOutputLocationValidity(op.dests.curr[i], instruction, block);
+                }
+                for (int i = 0; i < op.temp.count; i++) {
+                    if (op.temp.curr[i].equals(op.temp.orig[i])) {
+                        continue;
+                    }
+                    checkOutputLocationValidity(op.temp.curr[i], instruction, block);
+                }
+            }
+            case RAVInstruction.ValueMove move -> {
+                if (move.validateRegisters) {
+                    checkOutputLocationValidity(move.location, instruction, block);
+                }
+            }
+            case RAVInstruction.LocationMove move -> {
+                if (move instanceof RAVInstruction.StackMove stackMove && stackMove.backupSlot != null) {
+                    checkOutputLocationValidity(stackMove.backupSlot, stackMove, block);
+                }
+
+                if (move.validateRegisters) {
+                    checkOutputLocationValidity(move.to, instruction, block);
+                }
+            }
+            default -> {
+            }
+        }
+    }
+
+    protected void checkOutputLocationValidity(RAValue location, RAVInstruction.Base instruction, BasicBlock<?> block) {
+        if (!location.isRegister()) {
+            return;
+        }
+
+        var register = location.asRegister().getRegister();
+        if (!this.registerAllocationConfig.getAllocatableRegisters().contains(register)) {
+            throw new InvalidRegisterUsedException(register, instruction, block);
         }
     }
 
@@ -293,9 +362,5 @@ public class RegAllocVerifier {
         } else {
             this.verifyInstructionsAndCollectErrors();
         }
-    }
-
-    public VerifierPrinter getPrinter(OutputStream out) {
-        return new VerifierPrinter(out, this);
     }
 }

@@ -34,6 +34,7 @@ import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAVariable;
 import jdk.vm.ci.code.RegisterValue;
 import jdk.vm.ci.code.StackSlot;
+import jdk.vm.ci.meta.AllocatableValue;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.JavaValue;
 import jdk.vm.ci.meta.Value;
@@ -207,17 +208,51 @@ public class RAVInstruction {
     }
 
     public static class StateValuePair {
-        public JavaKind[] kinds;
-        public JavaValue[] curr;
-        public JavaValue[] orig;
+        private final JavaKind[] kinds;
+        private final JavaValue[] orig;
+        private JavaValue[] curr;
+
+        protected final RAValue[] origValue;
+        protected RAValue[] currValue;
 
         StateValuePair(JavaValue[] orig, JavaKind[] kinds) {
             this.orig = orig;
+            this.origValue = new RAValue[orig.length];
             this.kinds = kinds;
         }
 
-        public void setCurr(JavaValue[] curr) {
+        protected void setCurr(JavaValue[] curr) {
             this.curr = curr;
+            this.currValue = new RAValue[curr.length];
+        }
+
+        public int getCount() {
+            return kinds.length;
+        }
+
+        public JavaKind getKindAt(int i) {
+            return kinds[i];
+        }
+
+        public RAValue getOrigAt(int i) {
+            return getValueFromArrayAt(orig, origValue, i);
+        }
+
+        public RAValue getCurrAt(int i) {
+            return getValueFromArrayAt(curr, currValue, i);
+        }
+
+        protected RAValue getValueFromArrayAt(JavaValue[] input, RAValue[] output, int i) {
+            if (output[i] == null) {
+                var javaValue = input[i];
+                if (!(javaValue instanceof AllocatableValue allocValue) || Value.ILLEGAL.equals(allocValue)) {
+                    return null;
+                }
+
+                output[i] = RAValue.create(allocValue);
+            }
+
+            return output[i];
         }
     }
 
@@ -432,9 +467,6 @@ public class RAVInstruction {
      * Move between two stack slots (virtual or not).
      */
     public static class StackMove extends LocationMove {
-        public RAValue from;
-        public RAValue to;
-
         public RAValue backupSlot;
 
         public StackMove(LIRInstruction instr, Value from, Value to) {
@@ -447,9 +479,9 @@ public class RAVInstruction {
             assert from instanceof StackSlot || from instanceof VirtualStackSlot : "StackMove needs to receive instanceof StackSlot or VirtualStackSlot";
             assert to instanceof StackSlot || to instanceof VirtualStackSlot : "StackMove needs to receive instanceof StackSlot or VirtualStackSlot";
 
-            this.from = RAValue.create(from);
-            this.to = RAValue.create(to);
-            this.backupSlot = RAValue.create(backupSlot);
+            if (backupSlot != null) {
+                this.backupSlot = RAValue.create(backupSlot);
+            }
         }
 
         @Override
@@ -462,13 +494,8 @@ public class RAVInstruction {
      * Reload a symbol from a stack slot to a register.
      */
     public static class Reload extends LocationMove {
-        public RAValue from;
-        public RAValue to;
-
         public Reload(LIRInstruction instr, RegisterValue to, Value from) {
             super(instr, from, to);
-            this.from = RAValue.create(from);
-            this.to = RAValue.create(to);
         }
 
         @Override
@@ -481,13 +508,8 @@ public class RAVInstruction {
      * Spill symbol from register to a spill slot.
      */
     public static class Spill extends LocationMove {
-        public RAValue from;
-        public RAValue to;
-
         public Spill(LIRInstruction instr, Value to, RegisterValue from) {
             super(instr, from, to);
-            this.from = RAValue.create(from);
-            this.to = RAValue.create(to);
         }
 
         @Override
@@ -541,15 +563,9 @@ public class RAVInstruction {
      * information to replace the destination variable with the source variable, it is never part of
      * the verifier IR, so it is not subclass of {@link Base}.
      */
-    public static class CoalescedMove {
-        public final LIRInstruction lirInstruction;
-        public final RAVariable srcVariable;
-        public final RAVariable dstVariable;
-
+    public record CoalescedMove(LIRInstruction lirInstruction, RAVariable srcVariable, RAVariable dstVariable) {
         public CoalescedMove(LIRInstruction lirInstruction, Value dstVariable, Value srcVariable) {
-            this.lirInstruction = lirInstruction;
-            this.srcVariable = RAValue.create(LIRValueUtil.asVariable(srcVariable)).asVariable();
-            this.dstVariable = RAValue.create(dstVariable).asVariable();
+            this(lirInstruction, RAValue.create(LIRValueUtil.asVariable(srcVariable)).asVariable(), RAValue.create(dstVariable).asVariable());
         }
     }
 }

@@ -52,7 +52,7 @@ import jdk.graal.compiler.lir.framemap.FrameMap;
 import jdk.graal.compiler.options.OptionValues;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.ValueUtil;
-import jdk.vm.ci.meta.AllocatableValue;
+import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.Value;
 import jdk.vm.ci.meta.ValueKind;
@@ -98,7 +98,7 @@ public class BlockVerifierState {
 
     public BlockVerifierState(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig,
                     CalleeSaveMap calleeSaveMap, RegisterAllocationPhase allocator, FrameMap frameMap, OptionValues options) {
-        this.values = new AllocationStateMap(block, registerAllocationConfig, frameMap);
+        this.values = new AllocationStateMap(block, frameMap);
         this.registerAllocationConfig = registerAllocationConfig;
         this.calleeSaveMap = calleeSaveMap;
         this.block = block;
@@ -230,13 +230,16 @@ public class BlockVerifierState {
         }
 
         if (state instanceof ValueAllocationState valAllocState) {
-            if (!valAllocState.getRAValue().equals(orig)) {
-                // The equality here does not check kinds, that is done below
-                throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
+            var stateValue = valAllocState.getRAValue();
+            if (!stateValue.equals(orig)) {
+                if (!isNullEscapeHatch(orig, stateValue)) {
+                    // The equality here does not check kinds, that is done below
+                    throw new ValueNotInRegisterException(op, block, orig, curr, state, this);
+                }
             }
 
             if (!kindsEqualFromState(orig, valAllocState)) {
-                throw new KindsMismatchException(op, block, orig, valAllocState.getRAValue(), false);
+                throw new KindsMismatchException(op, block, orig, stateValue, false);
             }
 
             if (orig.isConstant()) {
@@ -251,6 +254,52 @@ public class BlockVerifierState {
         }
 
         throw GraalError.shouldNotReachHere("Invalid state " + state);
+    }
+
+    /**
+     * Workaround to accept {@link JavaConstant#INT_0} as a {@code null},
+     * because there are cases where it is assumed as such.
+     *
+     * @param orig Original, expected value
+     * @param stateValue Value stored in the location
+     * @return Whether the equality check can be skipped
+     */
+    protected boolean isNullEscapeHatch(RAValue orig, RAValue stateValue) {
+        /*
+         * Found an instance of
+         * @formatter:off
+         * stack:84|DWORD[_] = VALUEMOVE int[0|0x0]
+         * stack:96|QWORD[.] = VALUEMOVE Object[null]
+         * JUMP [] alive: [Object[null] -> stack:96|QWORD[.], Object[null] -> stack:84|DWORD[_]]
+         * @formatter:on
+         *
+         * Found when compiling AbstratMap.putAll(Map), for that reason, 0 is allowed as null.
+         */
+        if (!orig.isConstant() || !stateValue.isConstant()) {
+            return false;
+        }
+
+        var origKind = orig.getLIRKind();
+        if (origKind.isValue()) {
+            /*
+             * More specific condition would be: origKind.getReferenceCount() != 1 || !origKind.isCompressedReference(0),
+             * but for similar, future findings, any pointer is accepted.
+             */
+            return false;
+        }
+
+        var origConst = orig.asConstant().getConstantValue();
+        var currConst = stateValue.asConstant().getConstantValue();
+
+        if (!origConst.isJavaConstant() || !currConst.isJavaConstant()) {
+            return false;
+        }
+
+        if (!origConst.getJavaConstant().isNull()) {
+            return false;
+        }
+
+        return currConst.getJavaConstant().equals(JavaConstant.INT_0);
     }
 
     protected void checkMaterializationLocation(RAVConstant constant, ValueAllocationState state) {
@@ -400,14 +449,6 @@ public class BlockVerifierState {
      * @param move Move between locations, inserted by register allocator
      */
     protected void checkLocationMoveKinds(RAVInstruction.LocationMove move) {
-        AllocationState state = this.values.get(move.from);
-        if (state instanceof ValueAllocationState valueAllocationState) {
-            RAValue movedValue = valueAllocationState.getRAValue();
-            if (!movedValue.getLIRKind().getPlatformKind().equals(move.to.getLIRKind().getPlatformKind())) {
-                throw new KindsMismatchException(move, block, move.to, movedValue, false);
-            }
-        }
-
         if (RegAllocVerifierPhase.Options.CheckNeverSpillConstants.getValue(options)) {
             if (move instanceof RAVInstruction.Spill spill && allocator.getNeverSpillConstants()) {
                 var sourceState = values.get(spill.from);
@@ -430,18 +471,18 @@ public class BlockVerifierState {
      */
     public void checkStateValues(ArrayList<RAVInstruction.StateValuePair> pairs, RAVInstruction.Op op) {
         for (var pair : pairs) {
-            for (int i = 0; i < pair.kinds.length; i++) {
-                var origJV = pair.orig[i];
-                if (!(origJV instanceof AllocatableValue orig) || Value.ILLEGAL.equals(orig)) {
+            for (int i = 0; i < pair.getCount(); i++) {
+                var orig = pair.getOrigAt(i);
+                if (orig == null) {
                     continue;
                 }
 
-                var currJV = pair.curr[i];
-                if (!(currJV instanceof AllocatableValue curr) || Value.ILLEGAL.equals(curr)) {
+                var curr = pair.getCurrAt(i);
+                if (curr == null) {
                     continue;
                 }
 
-                var kind = pair.kinds[i];
+                var kind = pair.getKindAt(i);
                 if (JavaKind.Long.equals(kind)) {
                     /*
                      * Skipping long(s) because it can be a numeric value or a derived reference /
@@ -450,8 +491,8 @@ public class BlockVerifierState {
                     continue;
                 }
 
-                var origLIRKind = orig.getValueKind(LIRKind.class);
-                var currLIRKind = curr.getValueKind(LIRKind.class);
+                var origLIRKind = orig.getLIRKind();
+                var currLIRKind = curr.getLIRKind();
                 if (kind.isObject()) {
                     if (origLIRKind.getPlatformKind().getVectorLength() == 1 && (origLIRKind.isValue() || currLIRKind.isValue())) {
                         throw new JavaKindReferenceMismatchException(orig, curr, kind, op, block);
@@ -464,7 +505,7 @@ public class BlockVerifierState {
                     }
                 }
 
-                checkOperand(RAValue.create(orig), RAValue.create(curr), op);
+                checkOperand(orig, curr, op);
             }
         }
     }
@@ -579,7 +620,7 @@ public class BlockVerifierState {
     public void updateWithLocationMove(RAVInstruction.LocationMove move) {
         if (move instanceof RAVInstruction.StackMove stackMove && stackMove.backupSlot != null) {
             // Maybe the backup slot should hold what the scratch register holds?
-            this.values.put(stackMove.backupSlot, UnknownAllocationState.INSTANCE, move);
+            this.values.put(stackMove.backupSlot, UnknownAllocationState.INSTANCE);
         }
 
         var state = this.values.get(move.from);
@@ -591,11 +632,7 @@ public class BlockVerifierState {
             }
         }
 
-        if (move.validateRegisters) {
-            this.values.putClone(move.to, state, move);
-        } else {
-            this.values.putWithoutRegCheck(move.to, state.clone());
-        }
+        this.values.put(move.to, state.clone());
     }
 
     /**
@@ -638,12 +675,7 @@ public class BlockVerifierState {
 
             // We cannot believe the contents of registers used as temp, thus we need to reset.
             RAValue location = op.temp.curr[i];
-
-            if (op.temp.orig[i].equals(location)) {
-                this.values.putWithoutRegCheck(location, UnknownAllocationState.INSTANCE);
-            } else {
-                this.values.put(location, UnknownAllocationState.INSTANCE, op);
-            }
+            this.values.put(location, UnknownAllocationState.INSTANCE);
         }
 
         for (int i = 0; i < op.dests.count; i++) {
@@ -662,16 +694,7 @@ public class BlockVerifierState {
             RAValue location = op.dests.curr[i];
             RAValue variable = op.dests.orig[i];
 
-            if (location.equals(variable)) {
-                /*
-                 * Only check register validity if it was changed by the register allocator, for
-                 * example, rbp is used as input to start block and forbidden to be used by the
-                 * allocator
-                 */
-                this.values.putWithoutRegCheck(location, new ValueAllocationState(variable, op, block));
-            } else {
-                this.values.put(location, new ValueAllocationState(variable, op, block), op);
-            }
+            this.values.put(location, new ValueAllocationState(variable, op, block));
         }
 
         if (op.isLabel() && block.getId() == 0) {
@@ -770,7 +793,7 @@ public class BlockVerifierState {
 
             // Save same registers as symbol, and later check if it was retrieved
             var state = new ValueAllocationState(regValue, null, block);
-            this.values.putWithoutRegCheck(regValue, state);
+            this.values.put(regValue, state);
         }
     }
 
@@ -814,10 +837,6 @@ public class BlockVerifierState {
      */
     protected void updateWithValueMove(RAVInstruction.ValueMove valueMove) {
         var state = new ValueAllocationState(valueMove.constant, valueMove, block);
-        if (valueMove.validateRegisters) {
-            this.values.put(valueMove.getLocation(), state, valueMove);
-        } else {
-            this.values.putWithoutRegCheck(valueMove.getLocation(), state);
-        }
+        this.values.put(valueMove.getLocation(), state);
     }
 }

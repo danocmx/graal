@@ -24,9 +24,7 @@
  */
 package jdk.graal.compiler.lir.alloc.verifier;
 
-import jdk.graal.compiler.core.common.alloc.RegisterAllocationConfig;
 import jdk.graal.compiler.core.common.cfg.BasicBlock;
-import jdk.graal.compiler.lir.alloc.verifier.exceptions.InvalidRegisterUsedException;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAVConcreteStackSlot;
 import jdk.graal.compiler.lir.alloc.verifier.values.RAValue;
 import jdk.graal.compiler.lir.framemap.FrameMap;
@@ -55,6 +53,11 @@ import java.util.TreeMap;
  * slot, constant, but most importantly variables used before allocation. These are what we are
  * checking with the verification process.
  * </p>
+ *
+ * <p>
+ * Additionally, when storing a stack slot that overlaps with other slots,
+ * those slots have their value reset to {@link UnknownAllocationState unknown state}.
+ * </p>
  */
 public class AllocationStateMap {
     protected final BasicBlock<?> block;
@@ -69,20 +72,14 @@ public class AllocationStateMap {
      */
     private final TreeMap<RAVConcreteStackSlot, AllocationState> stackSlotMap;
 
-    /**
-     * Register allocation config describing which registers can be used.
-     */
-    protected final RegisterAllocationConfig registerAllocationConfig;
-
     protected final FrameMap frameMap;
 
-    public AllocationStateMap(BasicBlock<?> block, RegisterAllocationConfig registerAllocationConfig, FrameMap frameMap) {
+    public AllocationStateMap(BasicBlock<?> block, FrameMap frameMap) {
         valueMap = new EconomicHashMap<>();
         stackSlotMap = new TreeMap<>(Comparator.comparingInt(
-                o -> o.getStackSlot().getOffset(frameMap.totalFrameSize())));
+                        o -> o.getStackSlot().getOffset(frameMap.totalFrameSize())));
 
         this.block = block;
-        this.registerAllocationConfig = registerAllocationConfig;
         this.frameMap = frameMap;
     }
 
@@ -91,7 +88,6 @@ public class AllocationStateMap {
         stackSlotMap = new TreeMap<>(other.stackSlotMap);
 
         this.block = block;
-        registerAllocationConfig = other.registerAllocationConfig;
         frameMap = other.frameMap;
     }
 
@@ -112,19 +108,7 @@ public class AllocationStateMap {
     }
 
     /**
-     * Put a new state for location to the map, while checking if register can be allocated to.
-     *
-     * @param key Location used
-     * @param state State to store
-     */
-    public void put(RAValue key, AllocationState state, RAVInstruction.Base instruction) {
-        this.checkRegisterDestinationValidity(key, instruction);
-        putWithoutRegCheck(key, state);
-    }
-
-    /**
-     * Put a new state for location to the map, without checking if the register can actually be
-     * used.
+     * Put a new state for location to the map.
      *
      * <p>
      * This is useful for registers that are used by the ABI in the first label but can actually
@@ -134,7 +118,7 @@ public class AllocationStateMap {
      * @param key Location used
      * @param state State to store
      */
-    public void putWithoutRegCheck(RAValue key, AllocationState state) {
+    public void put(RAValue key, AllocationState state) {
         if (isHeldInStackSlotMap(key)) {
             var keySlot = key.asConcreteStackSlotValue();
             var lowerSlot = stackSlotMap.lowerKey(keySlot);
@@ -161,21 +145,6 @@ public class AllocationStateMap {
 
             valueMap.put(key, state);
         }
-    }
-
-    /**
-     * Put a copied state to a location, used when merging.
-     *
-     * @param key Location used
-     * @param state State to store
-     */
-    public void putClone(RAValue key, AllocationState state, RAVInstruction.Base instruction) {
-        if (state.isUnknown()) {
-            this.put(key, state, instruction);
-            return;
-        }
-
-        this.put(key, state.clone(), instruction);
     }
 
     /**
@@ -217,7 +186,7 @@ public class AllocationStateMap {
 
                 changed = true;
 
-                this.putWithoutRegCheck(location, incomingState.clone());
+                this.put(location, incomingState.clone());
                 continue;
             }
 
@@ -225,7 +194,7 @@ public class AllocationStateMap {
             if (newState != null) {
                 changed = true;
 
-                this.putWithoutRegCheck(location, newState);
+                this.put(location, newState);
             }
         }
 
@@ -247,24 +216,6 @@ public class AllocationStateMap {
         }
 
         return changed;
-    }
-
-    /**
-     * Check if register can be used by the register allocator. If not allowed, an exception is
-     * thrown.
-     *
-     * @param location Value that could be a register.
-     */
-    protected void checkRegisterDestinationValidity(RAValue location, RAVInstruction.Base instruction) {
-        if (!location.isRegister()) {
-            return;
-        }
-
-        // Equality check so we know that this change was made by the register allocator.
-        var register = location.asRegister().getRegister();
-        if (!this.registerAllocationConfig.getAllocatableRegisters().contains(register)) {
-            throw new InvalidRegisterUsedException(register, instruction, block);
-        }
     }
 
     class MapEntrySet extends AbstractSet<Map.Entry<? extends RAValue, AllocationState>> {
@@ -313,7 +264,7 @@ public class AllocationStateMap {
         }
     }
 
-    protected Set<Map.Entry<? extends RAValue, AllocationState>> getEntrySet() {
+    public Set<Map.Entry<? extends RAValue, AllocationState>> getEntrySet() {
         return new MapEntrySet();
     }
 
